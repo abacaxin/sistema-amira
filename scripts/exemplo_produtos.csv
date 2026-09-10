@@ -1,0 +1,6 @@
+codigo_barras,nome,categoria,preco_varejo,preco_atacado,estoque_varejo,estoque_atacado,peso,descricao,ativo
+7891234000018,Amira Eau de Parfum 100ml,perfumes,299.90,,12,0,320,Fragrancia amadeirada ambarada,sim
+7891234000025,Amira Body Splash 250ml,bodysplash,79.90,49.90,30,40,300,Spray corporal refrescante,sim
+7891234000032,Kit Presente Amira,perfumes,349.90,,5,0,600,Perfume 100ml + necessaire,sim
+7891234000049,Amira Intense 50ml,perfumes,219.90,,0,0,180,Versao concentrada,nao
+0194253000010,iPhone 15 128GB,iphones,4999.00,,3,0,240,Seminovo lacrado,sim

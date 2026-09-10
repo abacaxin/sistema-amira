@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sistema Amira</title>
+  <link rel="stylesheet" href="/assets/css/base.css">
+</head>
+<body>
+  <div id="root"><p style="padding:24px;font-family:system-ui">Carregando...</p></div>
+  <script type="module">
+    import { currentPerfil } from "/assets/js/auth.js";
+    const r = await currentPerfil();
+    location.replace(r && r.user && r.perfil ? "/dashboard" : "/login");
+  </script>
+</body>
+</html>

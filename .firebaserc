@@ -1,0 +1,12 @@
+{
+  "projects": {
+    "default": "flora-5754a"
+  },
+  "targets": {
+    "flora-5754a": {
+      "hosting": {
+        "interno": ["flora-5754a-interno"]
+      }
+    }
+  }
+}

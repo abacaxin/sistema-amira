@@ -1,0 +1,317 @@
+rules_version = '2';
+
+// =============================================================================
+//  REGRAS CANONICAS DO PROJETO  flora-5754a
+//  Este arquivo cobre O SITE (Flora/Amira) E O SISTEMA INTERNO (PDV/caixa/
+//  comissoes). Os dois compartilham o mesmo Firestore.
+//
+//  >>> ESTA E A UNICA COPIA QUE PODE SER PUBLICADA <<<
+//  Deploy sempre a partir deste repo:
+//      firebase deploy --only firestore:rules,firestore:indexes
+//  O arquivo em ~/Documentos/Amira/firestore.rules e uma copia de referencia
+//  e NAO deve ser publicado (publicar de la sobrescreve o que o sistema usa).
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+    function estaLogado() {
+      return request.auth != null;
+    }
+
+    function ehDono(uid) {
+      return estaLogado() && request.auth.uid == uid;
+    }
+
+    function emailVerificado() {
+      return estaLogado() && request.auth.token.email_verified == true;
+    }
+
+    function temPerfil() {
+      return estaLogado() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid));
+    }
+
+    function perfilData() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    function ehAdmin() {
+      return temPerfil() && perfilData().role == "admin";
+    }
+
+    // Vendedor do SISTEMA interno (loja fisica). Precisa estar ativo.
+    function ehVendedor() {
+      return temPerfil() &&
+        perfilData().role == "vendedor" &&
+        perfilData().get("ativo", false) == true;
+    }
+
+    // Funcionario da loja: admin (sempre) ou vendedor ativo.
+    function ehStaff() {
+      return ehAdmin() || ehVendedor();
+    }
+
+    function ehRevendedorAprovado() {
+      return estaLogado() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        (perfilData().get("statusRevendedor", "") == "aprovado" ||
+         perfilData().role == "admin");
+    }
+
+    // ── usuarios/{uid} ───────────────────────────────────────────────────
+    // Cliente do site: cria/edita o proprio perfil (allowlist de chaves,
+    // so depois do e-mail verificado, role sempre "cliente"). Admin le/edita
+    // qualquer um. O SISTEMA cria contas de equipe (role "vendedor"/"admin")
+    // pela instancia primaria ja logada como admin — coberto pelo branch
+    // `allow create: if ehAdmin()`.
+    function chavesUsuarioPermitidas() {
+      return ['nome', 'email', 'role', 'tipoConta', 'telefone', 'dataNascimento',
+        'fotoURL', 'aceiteTermos', 'aceiteMarketing', 'consentimentoEm',
+        'consentimentoVersao', 'criadoEm', 'atualizadoEm',
+        'cnpj', 'razaoSocial', 'provavelMEI', 'porteEmpresa', 'statusRevendedor'];
+    }
+    function stringsUsuarioNoLimite(d) {
+      return (!('nome' in d) || (d.nome is string && d.nome.size() <= 120)) &&
+        (!('telefone' in d) || (d.telefone is string && d.telefone.size() <= 20)) &&
+        (!('dataNascimento' in d) || (d.dataNascimento is string && d.dataNascimento.size() <= 10)) &&
+        (!('fotoURL' in d) || (d.fotoURL is string && d.fotoURL.size() <= 500)) &&
+        (!('cnpj' in d) || (d.cnpj is string && d.cnpj.size() <= 18)) &&
+        (!('razaoSocial' in d) || (d.razaoSocial is string && d.razaoSocial.size() <= 200)) &&
+        (!('consentimentoVersao' in d) || (d.consentimentoVersao is string && d.consentimentoVersao.size() <= 20));
+    }
+    match /usuarios/{uid} {
+      allow read: if ehDono(uid) || ehAdmin();
+
+      // Cliente do site cria o proprio perfil.
+      allow create: if ehDono(uid) &&
+        emailVerificado() &&
+        request.resource.data.keys().hasOnly(chavesUsuarioPermitidas()) &&
+        request.resource.data.keys().hasAll(['nome', 'email', 'role', 'tipoConta',
+          'telefone', 'dataNascimento', 'aceiteTermos', 'aceiteMarketing',
+          'consentimentoEm', 'consentimentoVersao', 'criadoEm']) &&
+        request.resource.data.role == "cliente" &&
+        request.resource.data.aceiteTermos == true &&
+        request.resource.data.aceiteMarketing is bool &&
+        request.resource.data.consentimentoEm == request.time &&
+        stringsUsuarioNoLimite(request.resource.data) &&
+        (!("statusRevendedor" in request.resource.data) ||
+          request.resource.data.statusRevendedor == "pendente");
+
+      // Admin cria conta de equipe do SISTEMA (vendedor/admin). O uid e o do
+      // Auth recem-criado (instancia secundaria), gravado pelo admin logado.
+      allow create: if ehAdmin() &&
+        request.resource.data.role in ['vendedor', 'admin'];
+
+      // Cliente do site edita o proprio perfil (allowlist, nao mexe em role
+      // nem se auto-aprova como revendedor).
+      allow update: if ehDono(uid) &&
+        request.resource.data.keys().hasOnly(chavesUsuarioPermitidas()) &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.get("aceiteTermos", true) == true &&
+        stringsUsuarioNoLimite(request.resource.data) &&
+        (
+          request.resource.data.get("statusRevendedor", "") ==
+            resource.data.get("statusRevendedor", "") ||
+          (request.resource.data.get("statusRevendedor", "") == "pendente" &&
+            resource.data.get("statusRevendedor", "") != "aprovado")
+        );
+
+      // Admin edita/gerencia qualquer perfil (inclui ativo/comissao/role de
+      // equipe do sistema).
+      allow update: if ehAdmin();
+      allow delete: if ehAdmin();
+    }
+
+    // ── usuarios/{uid}/dados/{docId} ─────────────────────────────────────
+    match /usuarios/{uid}/dados/{docId} {
+      allow read, write: if ehDono(uid) || ehAdmin();
+    }
+
+    // ── produtos/{produtoId} ────────────────────────────────────────────
+    // Catalogo publico para leitura. So admin cria/edita/remove — MENOS a
+    // baixa de estoque no PDV: um vendedor ativo pode alterar SOMENTE os
+    // campos de estoque (a venda em si vai para a colecao `vendas`).
+    match /produtos/{produtoId} {
+      allow read: if true;
+      allow create, delete: if ehAdmin();
+      allow update: if ehAdmin()
+        || (ehVendedor()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['estoqueVarejo', 'estoqueAtacado', 'atualizadoEm']));
+    }
+
+    // ── camadas/{camadaId} ─────────────────────────────────────────────
+    match /camadas/{camadaId} {
+      allow read: if true;
+      allow create, update: if ehAdmin() &&
+        request.resource.data.keys().hasOnly(['nome', 'slug', 'ordem', 'opcoes', 'criadoEm']) &&
+        request.resource.data.keys().hasAll(['nome', 'slug', 'ordem', 'opcoes', 'criadoEm']) &&
+        request.resource.data.nome is string &&
+        request.resource.data.nome.size() >= 1 &&
+        request.resource.data.nome.size() <= 60 &&
+        request.resource.data.slug is string &&
+        request.resource.data.slug.size() >= 1 &&
+        request.resource.data.slug.size() <= 60 &&
+        request.resource.data.ordem is int &&
+        request.resource.data.ordem >= 1 &&
+        request.resource.data.ordem <= 50 &&
+        request.resource.data.opcoes is list &&
+        request.resource.data.opcoes.size() <= 30;
+      allow delete: if ehAdmin();
+    }
+
+    // ── configuracoes/{docId} ──────────────────────────────────────────
+    // Textos/ajustes globais do site E config do sistema interno
+    // (configuracoes/comissao, configuracoes/indicadores, configuracoes/loja).
+    // Leitura publica (nada sensivel), escrita so admin.
+    match /configuracoes/{docId} {
+      allow read: if true;
+      allow write: if ehAdmin();
+    }
+
+    // ── carrinhos/{uid} ────────────────────────────────────────────────
+    match /carrinhos/{uid} {
+      allow read, write: if ehDono(uid);
+    }
+
+    // ── pedidos/{pedidoId} ─────────────────────────────────────────────
+    // Pedido do SITE, criado pelo cliente, SEM valores monetarios (allowlist).
+    // Campo opcional `ref` = codigo do indicador (link ?ref=) para a apuracao
+    // de comissao de indicacao, feita depois derivando totais de `produtos`.
+    match /pedidos/{pedidoId} {
+      allow read: if estaLogado() &&
+        (resource.data.uidComprador == request.auth.uid || ehAdmin());
+      allow create: if estaLogado() &&
+        emailVerificado() &&
+        request.resource.data.keys().hasOnly(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm', 'ref', 'refEm']) &&
+        request.resource.data.keys().hasAll(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm']) &&
+        request.resource.data.uidComprador == request.auth.uid &&
+        request.resource.data.itens is list &&
+        request.resource.data.itens.size() >= 1 &&
+        request.resource.data.itens.size() <= 30 &&
+        request.resource.data.temItemAtacado is bool &&
+        (request.resource.data.temItemAtacado == false || ehRevendedorAprovado()) &&
+        request.resource.data.modoEntrega in ['entrega', 'retirada'] &&
+        (
+          (request.resource.data.modoEntrega == 'retirada' &&
+            request.resource.data.endereco == null) ||
+          (request.resource.data.modoEntrega == 'entrega' &&
+            request.resource.data.endereco is map &&
+            request.resource.data.endereco.keys().hasOnly(['cep', 'endereco', 'bairro']) &&
+            request.resource.data.endereco.keys().hasAll(['cep', 'endereco', 'bairro']) &&
+            request.resource.data.endereco.cep is string &&
+            request.resource.data.endereco.cep.size() >= 8 &&
+            request.resource.data.endereco.cep.size() <= 12 &&
+            request.resource.data.endereco.endereco is string &&
+            request.resource.data.endereco.endereco.size() >= 1 &&
+            request.resource.data.endereco.endereco.size() <= 300 &&
+            request.resource.data.endereco.bairro is string &&
+            request.resource.data.endereco.bairro.size() >= 1 &&
+            request.resource.data.endereco.bairro.size() <= 120)
+        ) &&
+        request.resource.data.status == 'aguardando_pagamento' &&
+        request.resource.data.pagamento is map &&
+        request.resource.data.pagamento.keys().hasOnly(['metodo', 'status']) &&
+        request.resource.data.pagamento.keys().hasAll(['metodo', 'status']) &&
+        request.resource.data.pagamento.metodo == 'pix_whatsapp' &&
+        request.resource.data.pagamento.status == 'pendente' &&
+        request.resource.data.criadoEm == request.time &&
+        (!('ref' in request.resource.data) ||
+          (request.resource.data.ref is string &&
+           request.resource.data.ref.size() >= 1 &&
+           request.resource.data.ref.size() <= 40)) &&
+        (!('refEm' in request.resource.data) ||
+          request.resource.data.refEm == request.time);
+      allow update, delete: if ehAdmin();
+    }
+
+    // ── metricas/{docId} ───────────────────────────────────────────────
+    match /metricas/{docId} {
+      allow create: if
+        request.resource.data.keys().hasOnly(['tipo', 'pagina', 'dispositivo', 'origem', 'criadoEm']) &&
+        request.resource.data.keys().hasAll(['tipo', 'pagina', 'dispositivo', 'origem', 'criadoEm']) &&
+        request.resource.data.tipo in ['pagina', 'produto'] &&
+        request.resource.data.pagina is string &&
+        request.resource.data.pagina.size() > 0 &&
+        request.resource.data.pagina.size() <= 200 &&
+        request.resource.data.dispositivo in ['mobile', 'tablet', 'desktop'] &&
+        request.resource.data.origem is string &&
+        request.resource.data.origem.size() > 0 &&
+        request.resource.data.origem.size() <= 200 &&
+        request.resource.data.criadoEm == request.time;
+      allow read: if ehAdmin();
+      allow update, delete: if ehAdmin();
+    }
+
+    // =========================================================================
+    //  SISTEMA INTERNO (PDV / caixa / comissoes / indicadores)
+    // =========================================================================
+
+    // ── contadores/{doc} ──────────────────────────────────────────────
+    // Numeracao sequencial das vendas da loja fisica.
+    match /contadores/{doc} {
+      allow read: if ehStaff();
+      allow write: if ehStaff();
+    }
+
+    // ── caixa/{id} ────────────────────────────────────────────────────
+    match /caixa/{id} {
+      allow read: if ehAdmin()
+        || (ehVendedor() && resource.data.aberto_por_uid == request.auth.uid);
+      allow create: if ehStaff()
+        && request.resource.data.aberto_por_uid == request.auth.uid
+        && request.resource.data.status == 'aberto';
+      allow update: if (ehAdmin() && request.resource.data.aberto_por_uid == resource.data.aberto_por_uid)
+        || (ehVendedor()
+            && resource.data.aberto_por_uid == request.auth.uid
+            && request.resource.data.aberto_por_uid == resource.data.aberto_por_uid);
+      allow delete: if false;
+    }
+
+    // ── vendas/{id} ───────────────────────────────────────────────────
+    // Vendas da LOJA FISICA (canal 'loja'). Vendas do site NAO entram aqui —
+    // ficam em `pedidos` e sao lidas/derivadas pelo painel do sistema.
+    match /vendas/{id} {
+      allow read: if ehAdmin()
+        || (ehVendedor() && resource.data.vendedor_uid == request.auth.uid);
+      allow create: if ehAdmin()
+        || (ehVendedor()
+            && request.resource.data.canal == 'loja'
+            && request.resource.data.vendedor_uid == request.auth.uid
+            && request.resource.data.status == 'concluida');
+      allow update: if ehAdmin();
+      allow delete: if false;
+    }
+
+    // ── comissoes/{periodo}/vendedores/{uid} ─────────────────────────
+    match /comissoes/{periodo} {
+      allow read: if ehStaff();
+      allow write: if ehAdmin();
+      match /vendedores/{uid} {
+        allow read: if ehAdmin() || (ehVendedor() && request.auth.uid == uid);
+        allow write: if ehAdmin();
+      }
+    }
+
+    // ── indicadores/{id} ─────────────────────────────────────────────
+    // Divulgadores/indicadores do site (sem login proprio). `codigo` = valor
+    // do link ?ref=. So o admin cadastra; a equipe pode consultar.
+    match /indicadores/{id} {
+      allow read: if ehStaff();
+      allow create, update, delete: if ehAdmin();
+    }
+
+    // ── integracoes/{doc=**} ─────────────────────────────────────────
+    // Tokens/segredos de marketplace (fase futura) — so backend Admin SDK.
+    match /integracoes/{doc=**} {
+      allow read, write: if false;
+    }
+
+    // ── Bloqueio padrao ──────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

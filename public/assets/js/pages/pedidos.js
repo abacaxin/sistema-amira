@@ -36,6 +36,27 @@ const STATUS_TAG = {
 // Status em que o estoque ja deve estar baixado.
 const CONSOME_ESTOQUE = new Set(["pago", "preparando", "enviado", "entregue"]);
 
+// Codigo de retirada mostrado ao cliente (comprovante, confirmacao, QR Code)
+// e conferido no balcao. NUNCA fica gravado no pedido — e sempre recalculado
+// a partir do id do documento (mesmo calculo do site, ver
+// frontend/src/pages/services/pedidos.js:codigoRetirada). Por isso, pra achar
+// um pedido a partir desse codigo, recalculamos o codigo de cada pedido ja
+// carregado e comparamos, em vez de buscar direto por id.
+const AMBIGUOS_RETIRADA = { O: "0", I: "1", L: "1", U: "V" };
+function codigoRetirada(pedidoId) {
+  const base = String(pedidoId || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase()
+    .slice(-6)
+    .padStart(6, "X");
+  const limpo = [...base].map((c) => AMBIGUOS_RETIRADA[c] || c).join("");
+  return `AMR-${limpo}`;
+}
+/** Tira o prefixo "AMR-" (se tiver) e qualquer coisa que nao seja letra/numero. */
+function normalizarCodigoRetirada(s) {
+  return String(s || "").trim().toUpperCase().replace(/^AMR-?/, "").replace(/[^A-Z0-9]/g, "");
+}
+
 const { perfil } = await requireAuth({ roles: ["admin"] });
 const root = initShell({ perfil, active: "pedidos" });
 root.innerHTML = `<div class="card">Carregando...</div>`;
@@ -72,13 +93,25 @@ document.getElementById("fstatus").onchange = () => {
   renderLista();
 };
 document.getElementById("fcodigo").oninput = () => {
-  filtroCodigo = document.getElementById("fcodigo").value.trim().toLowerCase();
+  filtroCodigo = document.getElementById("fcodigo").value.trim();
   renderLista();
 };
 document.getElementById("fcodigo").onkeydown = async (e) => {
   if (e.key !== "Enter") return;
   const codigo = document.getElementById("fcodigo").value.trim();
-  if (!codigo || pedidos.some((p) => p.id === codigo)) return; // ja esta na lista carregada
+  if (!codigo) return;
+  const alvo = normalizarCodigoRetirada(codigo);
+  const jaCarregado = pedidos.some((p) => p.id === codigo || (alvo && codigoRetirada(p.id) === `AMR-${alvo}`));
+  if (jaCarregado) return; // ja esta na lista carregada (o filtro ja mostra)
+
+  // O codigo AMR-XXXXXX nunca fica gravado — so da pra tentar buscar direto
+  // no banco se o texto parece ser o id bruto do documento (o codigo AMR e
+  // sempre derivado, nao existe como campo pra consultar fora da lista
+  // carregada).
+  if (codigo.length < 15) {
+    toast("Nenhum pedido com esse codigo nos ultimos 300 pedidos carregados. Clique em Atualizar e tente de novo.", "warn");
+    return;
+  }
   try {
     const snap = await getDoc(doc(db, "pedidos", codigo));
     if (snap.exists()) detalhe({ id: snap.id, ...snap.data() });
@@ -127,7 +160,11 @@ function nomeComprador(uid) {
 
 function renderLista() {
   let arr = filtroStatus ? pedidos.filter((p) => (p.status || "") === filtroStatus) : pedidos;
-  if (filtroCodigo) arr = arr.filter((p) => p.id.toLowerCase().includes(filtroCodigo));
+  if (filtroCodigo) {
+    const alvoMin = filtroCodigo.toLowerCase();
+    const alvo = normalizarCodigoRetirada(filtroCodigo);
+    arr = arr.filter((p) => p.id.toLowerCase().includes(alvoMin) || (alvo && codigoRetirada(p.id).includes(alvo)));
+  }
 
   document.getElementById("lista").innerHTML = `
     <table>
@@ -141,7 +178,7 @@ function renderLista() {
             .map((p) => {
               const { subtotal, itensCount } = derivarItensPedido(p, produtosMap);
               return `<tr>
-                <td><code title="${escapeHtml(p.id)}">${escapeHtml(p.id.slice(0, 8))}…</code></td>
+                <td><code title="id: ${escapeHtml(p.id)}">${codigoRetirada(p.id)}</code></td>
                 <td>${fmtData(p.criadoEm)}</td>
                 <td>${escapeHtml(nomeComprador(p.uidComprador))}</td>
                 <td>${p.modoEntrega === "entrega" ? "Entrega" : "Retirada"}</td>
@@ -170,7 +207,7 @@ function detalhe(p, statusSugerido) {
 
   const c = document.createElement("div");
   c.innerHTML = `
-    <p class="muted">Codigo do pedido: <code>${escapeHtml(p.id)}</code></p>
+    <p class="muted">Codigo de retirada: <code>${codigoRetirada(p.id)}</code> &middot; <span title="${escapeHtml(p.id)}">id ${escapeHtml(p.id.slice(0, 8))}…</span></p>
     <p class="muted">${fmtData(p.criadoEm)} &middot; ${p.modoEntrega === "entrega" ? "Entrega" : "Retirada"} &middot;
       pagamento ${escapeHtml(p.pagamento?.metodo || "-")} (${escapeHtml(p.pagamento?.status || "-")})
       ${p.ref ? `&middot; indicador <code>${escapeHtml(String(p.ref))}</code>` : ""}</p>
@@ -212,7 +249,7 @@ function detalhe(p, statusSugerido) {
     </div>
     <p class="muted" id="status-msg"></p>`;
 
-  const bg = modal({ titulo: `Pedido ${p.id.slice(0, 8)}…`, corpo: c, textoCancelar: "Fechar" });
+  const bg = modal({ titulo: `Pedido ${codigoRetirada(p.id)}`, corpo: c, textoCancelar: "Fechar" });
 
   const sel = c.querySelector("#novo-status");
   const msg = c.querySelector("#status-msg");
@@ -327,11 +364,13 @@ async function mudarStatus(pedido, novoStatus) {
 }
 
 // ── Leitor de QR Code (retirada na loja) ─────────────────────────────────
-// O QR mostrado ao cliente na confirmacao de retirada codifica o mesmo
-// "codigo do pedido" (id do documento) usado na busca manual acima — ou uma
-// URL do site que aponta pra essa confirmacao. Le pela camera com jsQR
-// (decodificacao pura, sem depender de BarcodeDetector do navegador), acha
-// o pedido e abre o modal de detalhe ja com "Entregue" pre-selecionado.
+// O QR mostrado ao cliente (comprovante/confirmacao) codifica o codigo de
+// retirada "AMR-XXXXXX" (funcao codigoRetirada() no topo do arquivo) — ou
+// uma URL do site que aponta pra confirmacao do pedido. Como esse codigo
+// nunca fica gravado, a busca abaixo recalcula o codigo de cada pedido ja
+// carregado (ultimos 300) e compara. Le pela camera com jsQR (decodificacao
+// pura, sem depender de BarcodeDetector do navegador), acha o pedido e abre
+// o modal de detalhe ja com "Entregue" pre-selecionado.
 async function abrirScannerQr() {
   let jsQR;
   try {
@@ -349,7 +388,7 @@ async function abrirScannerQr() {
     <div class="row" style="align-items:end;margin-top:6px">
       <div style="flex:1">
         <label>Ou digite/cole o codigo</label>
-        <input id="qr-manual" placeholder="codigo do pedido">
+        <input id="qr-manual" placeholder="AMR-XXXXXX">
       </div>
       <div style="flex:0 0 auto"><button class="btn ghost" id="qr-buscar">Buscar</button></div>
     </div>`;
@@ -413,7 +452,7 @@ async function abrirScannerQr() {
   };
 }
 
-/** Extrai o codigo do pedido de um texto de QR: pode ser o codigo puro ou uma URL do site. */
+/** Extrai o texto bruto do codigo de um QR/paste: o "AMR-XXXXXX" puro ou uma URL do site. */
 function extrairCodigoPedido(texto) {
   const t = String(texto || "").trim();
   if (!t) return "";
@@ -429,21 +468,16 @@ function extrairCodigoPedido(texto) {
 }
 
 async function processarCodigoLido(textoLido) {
-  const codigo = extrairCodigoPedido(textoLido);
-  if (!codigo) {
+  const bruto = extrairCodigoPedido(textoLido);
+  const alvo = normalizarCodigoRetirada(bruto);
+  if (!alvo) {
     toast("QR Code lido nao contem um codigo de pedido reconhecivel.", "err");
     return;
   }
 
-  let pedido = pedidos.find((p) => p.id === codigo);
+  const pedido = pedidos.find((p) => codigoRetirada(p.id) === `AMR-${alvo}`);
   if (!pedido) {
-    try {
-      const snap = await getDoc(doc(db, "pedidos", codigo));
-      if (snap.exists()) pedido = { id: snap.id, ...snap.data() };
-    } catch (_) {}
-  }
-  if (!pedido) {
-    toast(`Nenhum pedido encontrado com o codigo lido (${codigo.slice(0, 8)}...).`, "err");
+    toast(`Nenhum pedido encontrado com o codigo AMR-${alvo} nos ultimos 300 pedidos carregados. Clique em "Atualizar" e tente de novo.`, "err");
     return;
   }
 

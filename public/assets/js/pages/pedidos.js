@@ -374,7 +374,11 @@ async function mudarStatus(pedido, novoStatus) {
 async function abrirScannerQr() {
   let jsQR;
   try {
-    ({ jsQR } = await import("https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm"));
+    // O pacote so exporta a funcao como default (CommonJS puro); o jsdelivr
+    // anuncia um export nomeado "jsQR" que nao existe de verdade e fica
+    // undefined — por isso pegamos o default, nao a desestruturacao.
+    jsQR = (await import("https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm")).default;
+    if (typeof jsQR !== "function") throw new Error("jsQR indisponivel");
   } catch (_) {
     toast("Nao foi possivel carregar o leitor de QR Code (sem internet?).", "err");
     return;

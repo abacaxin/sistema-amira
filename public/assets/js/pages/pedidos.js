@@ -44,6 +44,7 @@ let produtosMap = new Map();
 let compradores = {};
 let pedidos = [];
 let filtroStatus = "";
+let filtroCodigo = "";
 
 root.innerHTML = `
   <div class="card">
@@ -55,15 +56,35 @@ root.innerHTML = `
           ${STATUS.map((s) => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join("")}
         </select>
       </div>
+      <div>
+        <label>Codigo do pedido</label>
+        <input id="fcodigo" placeholder="cole ou digite o codigo do pedido">
+      </div>
       <div style="flex:0 0 auto"><button class="btn" id="atualizar">Atualizar</button></div>
     </div>
-    <p class="muted" style="margin:8px 0 0">Ultimos 300 pedidos do site. Total derivado dos precos atuais do catalogo (o pedido do site nao guarda valor) e sem frete.</p>
+    <p class="muted" style="margin:8px 0 0">Ultimos 300 pedidos do site. O "codigo" e o mesmo numero de pedido mostrado pro cliente na confirmacao de compra no site. Total derivado dos precos atuais do catalogo (o pedido do site nao guarda valor) e sem frete.</p>
   </div>
   <div class="card"><div id="lista">Carregando...</div></div>`;
 
 document.getElementById("fstatus").onchange = () => {
   filtroStatus = document.getElementById("fstatus").value;
   renderLista();
+};
+document.getElementById("fcodigo").oninput = () => {
+  filtroCodigo = document.getElementById("fcodigo").value.trim().toLowerCase();
+  renderLista();
+};
+document.getElementById("fcodigo").onkeydown = async (e) => {
+  if (e.key !== "Enter") return;
+  const codigo = document.getElementById("fcodigo").value.trim();
+  if (!codigo || pedidos.some((p) => p.id === codigo)) return; // ja esta na lista carregada
+  try {
+    const snap = await getDoc(doc(db, "pedidos", codigo));
+    if (snap.exists()) detalhe({ id: snap.id, ...snap.data() });
+    else toast("Nenhum pedido com esse codigo exato (fora dos ultimos 300 carregados).", "warn");
+  } catch (_) {
+    toast("Nenhum pedido com esse codigo exato (fora dos ultimos 300 carregados).", "warn");
+  }
 };
 document.getElementById("atualizar").onclick = carregar;
 
@@ -103,12 +124,13 @@ function nomeComprador(uid) {
 }
 
 function renderLista() {
-  const arr = filtroStatus ? pedidos.filter((p) => (p.status || "") === filtroStatus) : pedidos;
+  let arr = filtroStatus ? pedidos.filter((p) => (p.status || "") === filtroStatus) : pedidos;
+  if (filtroCodigo) arr = arr.filter((p) => p.id.toLowerCase().includes(filtroCodigo));
 
   document.getElementById("lista").innerHTML = `
     <table>
       <thead><tr>
-        <th>Data</th><th>Comprador</th><th>Entrega</th><th class="right">Itens</th>
+        <th>Codigo</th><th>Data</th><th>Comprador</th><th>Entrega</th><th class="right">Itens</th>
         <th class="right">Total (itens)</th><th>Ref</th><th>Estoque</th><th>Status</th><th></th>
       </tr></thead>
       <tbody>
@@ -117,6 +139,7 @@ function renderLista() {
             .map((p) => {
               const { subtotal, itensCount } = derivarItensPedido(p, produtosMap);
               return `<tr>
+                <td><code title="${escapeHtml(p.id)}">${escapeHtml(p.id.slice(0, 8))}…</code></td>
                 <td>${fmtData(p.criadoEm)}</td>
                 <td>${escapeHtml(nomeComprador(p.uidComprador))}</td>
                 <td>${p.modoEntrega === "entrega" ? "Entrega" : "Retirada"}</td>
@@ -128,7 +151,7 @@ function renderLista() {
                 <td class="right"><button class="btn ghost ver" data-id="${p.id}">Ver</button></td>
               </tr>`;
             })
-            .join("") || `<tr><td colspan="9" class="muted">Nenhum pedido.</td></tr>`
+            .join("") || `<tr><td colspan="10" class="muted">${filtroCodigo || filtroStatus ? "Nenhum pedido encontrado nos ultimos 300 com esse filtro." : "Nenhum pedido."}</td></tr>`
         }
       </tbody>
     </table>`;
@@ -145,6 +168,7 @@ function detalhe(p) {
 
   const c = document.createElement("div");
   c.innerHTML = `
+    <p class="muted">Codigo do pedido: <code>${escapeHtml(p.id)}</code></p>
     <p class="muted">${fmtData(p.criadoEm)} &middot; ${p.modoEntrega === "entrega" ? "Entrega" : "Retirada"} &middot;
       pagamento ${escapeHtml(p.pagamento?.metodo || "-")} (${escapeHtml(p.pagamento?.status || "-")})
       ${p.ref ? `&middot; indicador <code>${escapeHtml(String(p.ref))}</code>` : ""}</p>

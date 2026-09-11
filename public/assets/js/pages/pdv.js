@@ -12,11 +12,37 @@ const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "pdv" });
 root.innerHTML = `<div class="card">Carregando...</div>`;
 
+const FORMAS_PARCELAVEIS = new Set(["credito", "crediario"]);
+
 try {
 const config = await getConfigSistema();
 const formas = config.formas_pagamento?.length
   ? config.formas_pagamento
-  : ["dinheiro", "pix", "debito", "credito"];
+  : ["dinheiro", "pix", "debito", "credito", "crediario"];
+const parc = config.parcelamento || { maximo: 12, minimo_parcela: 0, juros: {} };
+
+// Quantas parcelas cabem num valor (respeita o maximo da config E o valor
+// minimo por parcela, ex.: nao deixa parcelar R$40 em 12x se o minimo por
+// parcela e R$50).
+function parcelasDisponiveis(valor) {
+  const max = Math.max(1, Math.trunc(parc.maximo) || 12);
+  const min = Math.max(0, Number(parc.minimo_parcela) || 0);
+  const porMinimo = min > 0 ? Math.max(1, Math.floor(valor / min)) : max;
+  const limite = Math.max(1, Math.min(max, porMinimo));
+  return Array.from({ length: limite }, (_, i) => i + 1);
+}
+
+// Juros configurado para essa quantidade de parcelas (0 se nao configurado).
+function jurosDe(numParcelas) {
+  return Number(parc.juros?.[String(numParcelas)] || 0);
+}
+
+function infoParcela(valor, numParcelas) {
+  const jurosPct = jurosDe(numParcelas);
+  const valorComJuros = round2(valor * (1 + jurosPct / 100));
+  const valorParcela = round2(valorComJuros / numParcelas);
+  return { jurosPct, valorComJuros, valorParcela };
+}
 
 // caixa aberto do usuario
 const caixaDoc = (await getDocs(query(
@@ -79,7 +105,7 @@ $("#bipar").onkeydown = (e) => {
 $("#desconto").oninput = renderTotais;
 $("#add-pag").onclick = () => {
   const { total, pago } = calc();
-  pagamentos.push({ forma: formas[0], valor: round2(Math.max(0, total - pago)) });
+  pagamentos.push({ forma: formas[0], valor: round2(Math.max(0, total - pago)), parcelas: 1 });
   renderPags();
   renderTotais();
 };
@@ -190,26 +216,64 @@ function renderCart() {
 
 function renderPags() {
   $("#pags").innerHTML = pagamentos
-    .map(
-      (pg, i) => `<div class="cart-line">
+    .map((pg, i) => {
+      const parcelavel = FORMAS_PARCELAVEIS.has(pg.forma);
+      let linhaParcelas = "";
+      if (parcelavel) {
+        const opcoes = parcelasDisponiveis(pg.valor);
+        const numParcelas = opcoes.includes(pg.parcelas) ? pg.parcelas : 1;
+        pg.parcelas = numParcelas;
+        const { jurosPct, valorComJuros, valorParcela } = infoParcela(pg.valor, numParcelas);
+        linhaParcelas = `
+          <div class="cart-line">
+            <select data-i="${i}" class="pp">
+              ${opcoes
+                .map((n) => {
+                  const j = jurosDe(n);
+                  return `<option value="${n}" ${n === numParcelas ? "selected" : ""}>${n}x${j ? ` (${j}% juros)` : " sem juros"}</option>`;
+                })
+                .join("")}
+            </select>
+            <span class="muted">${numParcelas}x de ${brl(valorParcela)}${jurosPct ? ` (total ${brl(valorComJuros)} com juros)` : ""}</span>
+          </div>`;
+      }
+      return `<div class="cart-line">
         <select data-i="${i}" class="pf">${formas
           .map((f) => `<option ${f === pg.forma ? "selected" : ""}>${f}</option>`)
           .join("")}</select>
         <input class="pv" data-i="${i}" value="${pg.valor}" inputmode="decimal" style="width:120px">
         <button class="btn ghost prm" data-i="${i}">&times;</button>
-      </div>`
-    )
+      </div>${linhaParcelas}`;
+    })
     .join("");
   $("#pags")
     .querySelectorAll(".pf")
-    .forEach((s) => (s.onchange = () => (pagamentos[+s.dataset.i].forma = s.value)));
+    .forEach(
+      (s) =>
+        (s.onchange = () => {
+          const pg = pagamentos[+s.dataset.i];
+          pg.forma = s.value;
+          pg.parcelas = 1;
+          renderPags();
+        })
+    );
   $("#pags")
     .querySelectorAll(".pv")
     .forEach(
       (inp) =>
         (inp.onchange = () => {
           pagamentos[+inp.dataset.i].valor = round2(parseNum(inp.value));
+          renderPags();
           renderTotais();
+        })
+    );
+  $("#pags")
+    .querySelectorAll(".pp")
+    .forEach(
+      (s) =>
+        (s.onchange = () => {
+          pagamentos[+s.dataset.i].parcelas = Math.trunc(+s.value) || 1;
+          renderPags();
         })
     );
   $("#pags")
@@ -278,6 +342,14 @@ async function finalizar() {
     }));
     const comissao = calcularComissao({ itens: itensVenda, subtotal, total, config, perfil });
     const cliente = $("#cliente").value.trim() || null;
+    const pagamentosSalvos = pagamentos.map((p) => {
+      const base = { forma: p.forma, valor: round2(p.valor) };
+      if (FORMAS_PARCELAVEIS.has(p.forma) && p.parcelas > 1) {
+        const { jurosPct, valorComJuros, valorParcela } = infoParcela(p.valor, p.parcelas);
+        return { ...base, parcelas: p.parcelas, juros_pct: jurosPct, valor_com_juros: valorComJuros, valor_parcela: valorParcela };
+      }
+      return base;
+    });
 
     const numero = await runTransaction(db, async (t) => {
       const contRef = doc(db, "contadores", "vendas");
@@ -315,7 +387,7 @@ async function finalizar() {
         subtotal,
         desconto,
         total,
-        pagamentos: pagamentos.map((p) => ({ forma: p.forma, valor: round2(p.valor) })),
+        pagamentos: pagamentosSalvos,
         status: "concluida",
         caixa_id: caixaAbertoId || null,
         comissao,
@@ -324,7 +396,7 @@ async function finalizar() {
     });
 
     toast(`Venda #${numero} registrada.`, "ok");
-    recibo({ numero, itens: itensVenda, subtotal, desconto, total, pagamentos: [...pagamentos], cliente });
+    recibo({ numero, itens: itensVenda, subtotal, desconto, total, pagamentos: pagamentosSalvos, cliente });
 
     // atualiza estoque em memoria
     itensVenda.forEach((it) => {
@@ -364,7 +436,7 @@ function recibo(v) {
     ${v.pagamentos
       .map(
         (p) =>
-          `<div style="display:flex;justify-content:space-between"><span>${p.forma}</span><span>${brl(p.valor)}</span></div>`
+          `<div style="display:flex;justify-content:space-between"><span>${p.forma}${p.parcelas > 1 ? ` (${p.parcelas}x de ${brl(p.valor_parcela)})` : ""}</span><span>${brl(p.valor)}</span></div>`
       )
       .join("")}
     <hr>

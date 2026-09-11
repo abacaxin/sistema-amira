@@ -10,14 +10,19 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase
 export const CONFIG_SISTEMA_PADRAO = {
   nome_loja: "Amira",
   cnpj: "",
-  formas_pagamento: ["dinheiro", "pix", "debito", "credito"],
+  formas_pagamento: ["dinheiro", "pix", "debito", "credito", "crediario"],
   comissao: { base: "total", percentual_padrao: 0 },
+  // Parcelamento do PDV (credito/crediario): `maximo` = numero maximo de
+  // parcelas oferecido; `minimo_parcela` = valor minimo (R$) que cada
+  // parcela pode ter (limita quantas parcelas cabem numa venda pequena);
+  // `juros` = percentual de juros por quantidade de parcelas, ex.:
+  // { "3": 2.5 } = 3x tem 2,5% de juros sobre o valor. Chave ausente = 0%.
+  parcelamento: { maximo: 12, minimo_parcela: 0, juros: {} },
 };
 
 export const CONFIG_INDICADORES_PADRAO = {
   site_url: "",
   percentual: 5,
-  janela_dias: 7,
   categorias_excluidas: ["iphones"],
 };
 

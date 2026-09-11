@@ -6,7 +6,7 @@ import {
   getConfigIndicadores, periodoParaIntervalo,
 } from "../db.js";
 import { brl, round2 } from "../money.js";
-import { baseElegivelIndicador } from "../produtos-schema.js";
+import { baseElegivelIndicador, derivarItensPedido } from "../produtos-schema.js";
 
 const { perfil } = await requireAuth({ roles: ["admin"] });
 const root = initShell({ perfil, active: "indicadores" });
@@ -14,22 +14,26 @@ const root = initShell({ perfil, active: "indicadores" });
 const cfg = await getConfigIndicadores();
 const siteUrl = (cfg.site_url || "").replace(/\/+$/, "");
 const pct = Number(cfg.percentual ?? 5);
-const janela = Number(cfg.janela_dias ?? 7);
 const excluirSlugs = cfg.categorias_excluidas || [];
 const excluidasTxt = excluirSlugs.join(", ") || "(so iPhone, por prefixo)";
 
 const agora = new Date();
 let periodo = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}`;
 let indicadores = [];
+let vendidoPorCodigo = {}; // codigo -> { qtd, total } (todo o historico, sem filtro de periodo)
+let totalGeralVendido = 0;
 
 root.innerHTML = `
   <div class="card">
     <div class="row" style="align-items:center">
       <button class="btn" id="novo">+ Indicador</button>
-      <span class="muted">Comissao: <strong>${pct}%</strong> &middot; link vale <strong>${janela} dias</strong> &middot; sem comissao: iPhone${excluirSlugs.length ? " + " + escapeHtml(excluidasTxt) : ""} &middot; <a href="/config">alterar</a></span>
+      <span class="muted">Comissao: <strong>${pct}%</strong> &middot; link do indicador nao expira &middot; sem comissao: iPhone${excluirSlugs.length ? " + " + escapeHtml(excluidasTxt) : ""} &middot; <a href="/config">alterar</a></span>
     </div>
   </div>
-  <div class="card"><div id="tabela">Carregando...</div></div>
+  <div class="card">
+    <div id="tabela">Carregando...</div>
+    <p class="muted" id="total-geral" style="margin-top:8px"></p>
+  </div>
 
   <div class="card">
     <strong>Apuracao de comissoes &mdash; pedidos do site</strong>
@@ -48,6 +52,7 @@ document.getElementById("apurar").onclick = () => {
 };
 
 await carregar();
+await carregarTotaisVendidos();
 await apurar();
 
 function normalizaCodigo(s) {
@@ -68,29 +73,68 @@ async function carregar() {
   renderTabela();
 }
 
+// Total vendido por indicador, olhando TODO o historico de `pedidos` com
+// `ref` (nao cancelados) — nao depende do filtro de periodo da apuracao de
+// comissao. Total bruto dos itens (sem excluir iPhone), pois aqui e "quanto
+// o indicador vendeu", nao a base de comissao.
+async function carregarTotaisVendidos() {
+  try {
+    const [pedidosSnap, produtosSnap] = await Promise.all([
+      getDocs(query(collection(db, "pedidos"), where("ref", "!=", ""))),
+      getDocs(collection(db, "produtos")),
+    ]);
+    const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    const pedidos = pedidosSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((p) => p.status !== "cancelado");
+
+    vendidoPorCodigo = {};
+    totalGeralVendido = 0;
+    for (const p of pedidos) {
+      const cod = String(p.ref);
+      const { subtotal } = derivarItensPedido(p, produtosMap);
+      const a = vendidoPorCodigo[cod] || (vendidoPorCodigo[cod] = { qtd: 0, total: 0 });
+      a.qtd++;
+      a.total = round2(a.total + subtotal);
+      totalGeralVendido = round2(totalGeralVendido + subtotal);
+    }
+  } catch (_) {
+    vendidoPorCodigo = {};
+    totalGeralVendido = 0;
+  }
+  renderTabela();
+}
+
 function renderTabela() {
   document.getElementById("tabela").innerHTML = `
     <table>
       <thead><tr>
-        <th>Nome</th><th>Codigo</th><th>Link</th><th>Contato</th><th>Ativo</th><th></th>
+        <th>Nome</th><th>Codigo</th><th>Link</th><th class="right">Pedidos</th>
+        <th class="right">Total vendido</th><th>Contato</th><th>Ativo</th><th></th>
       </tr></thead>
       <tbody>
         ${
           indicadores
-            .map(
-              (r) => `<tr>
+            .map((r) => {
+              const v = vendidoPorCodigo[r.codigo] || { qtd: 0, total: 0 };
+              return `<tr>
                 <td>${escapeHtml(r.nome || "-")}</td>
                 <td><code>${escapeHtml(r.codigo || "")}</code></td>
                 <td><button class="btn ghost copiar" data-cod="${escapeHtml(r.codigo || "")}">Copiar link</button></td>
+                <td class="right">${v.qtd}</td>
+                <td class="right">${brl(v.total)}</td>
                 <td>${escapeHtml(r.contato || "")}</td>
                 <td><span class="tag ${r.ativo === false ? "inativo" : "ativo"}">${r.ativo === false ? "inativo" : "ativo"}</span></td>
                 <td class="right"><button class="btn ghost editar" data-id="${r.id}">Editar</button></td>
-              </tr>`
-            )
-            .join("") || `<tr><td colspan="6" class="muted">Nenhum indicador cadastrado.</td></tr>`
+              </tr>`;
+            })
+            .join("") || `<tr><td colspan="8" class="muted">Nenhum indicador cadastrado.</td></tr>`
         }
       </tbody>
     </table>`;
+
+  document.getElementById("total-geral").textContent =
+    `Total vendido por todos os indicadores (historico completo): ${brl(totalGeralVendido)}.`;
 
   document.querySelectorAll(".editar").forEach(
     (b) => (b.onclick = () => editar(indicadores.find((r) => r.id === b.dataset.id)))

@@ -4,7 +4,8 @@ import {
   db, collection, getDocs, query, where, orderBy, limit,
   doc, runTransaction, serverTimestamp,
 } from "../db.js";
-import { brl } from "../money.js";
+import { brl, round2 } from "../money.js";
+import { derivarItensPedido } from "../produtos-schema.js";
 
 const CANAIS = { loja: "Loja fisica", site: "Site proprio", mercado_livre: "Mercado Livre", shopee: "Shopee" };
 
@@ -21,6 +22,7 @@ root.innerHTML = `
       <select id="fcanal">
         <option value="">Todos os canais</option>
         ${Object.entries(CANAIS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+        ${ehAdm ? `<option value="indicadores">Indicadores</option>` : ""}
       </select>
       <button class="btn" id="buscar">Atualizar</button>
     </div>
@@ -38,6 +40,11 @@ async function carregar() {
   const lista = document.getElementById("lista");
   lista.innerHTML = `<div class="card">Carregando...</div>`;
   try {
+  if (filtroCanal === "indicadores") {
+    await carregarTotalIndicadores(lista);
+    return;
+  }
+
   let q;
   if (ehAdm) {
     q = filtroCanal
@@ -84,6 +91,35 @@ async function carregar() {
   }
 }
 
+// So admin (a leitura de `pedidos` fora dos proprios so e liberada pra
+// admin nas rules). Mostra so o total geral vendido pelos indicadores —
+// o detalhamento por indicador fica na pagina Indicadores.
+async function carregarTotalIndicadores(lista) {
+  try {
+    const [pedidosSnap, produtosSnap] = await Promise.all([
+      getDocs(query(collection(db, "pedidos"), where("ref", "!=", ""))),
+      getDocs(collection(db, "produtos")),
+    ]);
+    const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    const pedidos = pedidosSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((p) => p.status !== "cancelado");
+
+    let total = 0;
+    for (const p of pedidos) total = round2(total + derivarItensPedido(p, produtosMap).subtotal);
+
+    lista.innerHTML = `
+      <div class="card">
+        <strong>Vendas via indicadores (link ?ref= do site)</strong>
+        <p class="muted">Soma de todos os pedidos do site com um indicador atribuido, status diferente de cancelado. Total derivado dos precos atuais do catalogo.</p>
+        <div class="totais big"><span>Total vendido</span><span>${brl(total)}</span></div>
+        <p class="muted">Pedidos considerados: ${pedidos.length}. Detalhamento por indicador em <a href="/indicadores">Indicadores</a>.</p>
+      </div>`;
+  } catch (e) {
+    erroCard(lista, e, carregar);
+  }
+}
+
 function detalhe(v) {
   const c = document.createElement("div");
   c.innerHTML = `
@@ -97,7 +133,7 @@ function detalhe(v) {
     <div class="totais"><span>Desconto</span><span>- ${brl(v.desconto || 0)}</span></div>
     <div class="totais big"><span>Total</span><span>${brl(v.total)}</span></div>
     ${(v.pagamentos || [])
-      .map((p) => `<div class="totais"><span>${p.forma}</span><span>${brl(p.valor)}</span></div>`)
+      .map((p) => `<div class="totais"><span>${p.forma}${p.parcelas > 1 ? ` (${p.parcelas}x de ${brl(p.valor_parcela)}${p.juros_pct ? `, ${p.juros_pct}% juros` : ""})` : ""}</span><span>${brl(p.valor)}</span></div>`)
       .join("")}
     ${
       v.comissao

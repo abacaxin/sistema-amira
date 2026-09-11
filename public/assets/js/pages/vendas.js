@@ -59,7 +59,7 @@ async function carregar() {
 
   document.getElementById("lista").innerHTML = `
     <div class="card">
-      <table>
+      <div class="tabela-wrap"><table>
         <thead><tr>
           <th>#</th><th>Data</th><th>Canal</th><th>Vendedor</th><th class="right">Total</th><th>Status</th><th></th>
         </tr></thead>
@@ -80,7 +80,7 @@ async function carregar() {
               .join("") || `<tr><td colspan="7" class="muted">Nenhuma venda.</td></tr>`
           }
         </tbody>
-      </table>
+      </table></div>
     </div>`;
 
   document.querySelectorAll(".ver").forEach(

@@ -107,7 +107,7 @@ async function carregarTotaisVendidos() {
 
 function renderTabela() {
   document.getElementById("tabela").innerHTML = `
-    <table>
+    <div class="tabela-wrap"><table>
       <thead><tr>
         <th>Nome</th><th>Codigo</th><th>Link</th><th class="right">Pedidos</th>
         <th class="right">Total vendido</th><th>Contato</th><th>Ativo</th><th></th>
@@ -131,7 +131,7 @@ function renderTabela() {
             .join("") || `<tr><td colspan="8" class="muted">Nenhum indicador cadastrado.</td></tr>`
         }
       </tbody>
-    </table>`;
+    </table></div>`;
 
   document.getElementById("total-geral").textContent =
     `Total vendido por todos os indicadores (historico completo): ${brl(totalGeralVendido)}.`;
@@ -263,7 +263,7 @@ async function apurar() {
   const totCom = round2(totBase * pct / 100);
 
   box.innerHTML = `
-    <table>
+    <div class="tabela-wrap"><table>
       <thead><tr>
         <th>Indicador</th><th>Codigo</th><th class="right">Pedidos</th>
         <th class="right">Base elegivel</th><th class="right">Comissao (${pct}%)</th>
@@ -272,6 +272,6 @@ async function apurar() {
         ${linhas || `<tr><td colspan="5" class="muted">Sem pedidos com indicador no periodo.</td></tr>`}
         ${linhas ? `<tr><td colspan="3"><strong>TOTAL</strong></td><td class="right"><strong>${brl(totBase)}</strong></td><td class="right"><strong>${brl(totCom)}</strong></td></tr>` : ""}
       </tbody>
-    </table>
+    </table></div>
     <p class="muted">Total derivado dos precos atuais do catalogo (pedido do site nao guarda valor). Pagamento manual.</p>`;
 }

@@ -85,7 +85,7 @@ function renderTabela() {
   });
 
   document.getElementById("tabela").innerHTML = `
-    <table>
+    <div class="tabela-wrap"><table>
       <thead><tr>
         <th><input type="checkbox" id="chk-all" style="width:auto"></th>
         <th>Nome</th><th>Cod. barras</th><th>${escapeHtml(camadaPrincipal(camadas)?.nome || "Filtro")}</th>
@@ -111,7 +111,7 @@ function renderTabela() {
             .join("") || `<tr><td colspan="9" class="muted">Nenhum produto.</td></tr>`
         }
       </tbody>
-    </table>`;
+    </table></div>`;
 
   document.querySelectorAll(".editar").forEach(
     (b) => (b.onclick = () => editar(produtos.find((p) => p.id === b.dataset.id)))

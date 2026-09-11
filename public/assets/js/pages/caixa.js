@@ -112,7 +112,7 @@ async function renderBody() {
 
     <div class="card">
       <strong>Movimentos</strong>
-      <table>
+      <div class="tabela-wrap"><table>
         <thead><tr><th>Quando</th><th>Tipo</th><th>Motivo</th><th class="right">Valor</th></tr></thead>
         <tbody>
           ${
@@ -125,7 +125,7 @@ async function renderBody() {
               .join("") || `<tr><td class="muted">-</td></tr>`
           }
         </tbody>
-      </table>
+      </table></div>
     </div>
 
     ${histHtml(hist)}`;
@@ -140,7 +140,7 @@ function histHtml(hist) {
   return `
     <div class="card">
       <strong>Historico (seus ultimos caixas)</strong>
-      <table>
+      <div class="tabela-wrap"><table>
         <thead><tr><th>Data</th><th>Abertura</th><th>Fechamento</th><th>Diferenca</th><th>Status</th></tr></thead>
         <tbody>
           ${
@@ -157,7 +157,7 @@ function histHtml(hist) {
               .join("") || `<tr><td class="muted">-</td></tr>`
           }
         </tbody>
-      </table>
+      </table></div>
     </div>`;
 }
 

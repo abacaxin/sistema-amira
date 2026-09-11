@@ -94,7 +94,7 @@ root.innerHTML = `
 
   <div class="card">
     <strong>Top produtos hoje</strong>
-    <table>
+    <div class="tabela-wrap"><table>
       <thead><tr><th>Produto</th><th class="right">Qtd</th><th class="right">Total</th></tr></thead>
       <tbody>
         ${
@@ -103,7 +103,7 @@ root.innerHTML = `
             .join("") || `<tr><td class="muted">-</td></tr>`
         }
       </tbody>
-    </table>
+    </table></div>
   </div>`;
 } catch (e) {
   erroCard(root, e);

@@ -20,9 +20,13 @@ export function initShell({ perfil, active }) {
   root.innerHTML = `
     <div class="app">
       <aside class="side">
+        <input type="checkbox" id="nav-toggle" class="nav-toggle">
         <div class="brand">
           <img class="brand-logo" src="/assets/img/amira-logo.png" alt="Amira">
           <small>Sistema interno</small>
+          <label for="nav-toggle" class="nav-toggle-btn" aria-label="Abrir menu">
+            <span class="icone-abrir">&#9776;</span><span class="icone-fechar">&times;</span>
+          </label>
         </div>
         <nav>
           ${itens

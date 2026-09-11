@@ -116,7 +116,10 @@ service cloud.firestore {
         (!('consentimentoVersao' in d) || (d.consentimentoVersao is string && d.consentimentoVersao.size() <= 20));
     }
     match /usuarios/{uid} {
-      allow read: if ehDono(uid) || ehAdmin();
+      // Vendedor le perfil de clientes pra conferir nome/telefone na tela de
+      // Pedidos (confirmacao de retirada/entrega) — mesmo nivel de confianca
+      // ja dado a ele em produtos/pedidos.
+      allow read: if ehDono(uid) || ehAdmin() || ehVendedor();
 
       // Cliente do site cria o próprio perfil.
       allow create: if ehDono(uid) &&
@@ -248,7 +251,7 @@ service cloud.firestore {
     // derivando totais de `produtos`).
     match /pedidos/{pedidoId} {
       allow read: if estaLogado() &&
-        (resource.data.uidComprador == request.auth.uid || ehAdmin());
+        (resource.data.uidComprador == request.auth.uid || ehAdmin() || ehVendedor());
       allow create: if estaLogado() &&
         emailVerificado() &&
         request.resource.data.keys().hasOnly(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm', 'ref', 'refEm']) &&
@@ -295,13 +298,25 @@ service cloud.firestore {
         (!('refEm' in request.resource.data) ||
           request.resource.data.refEm == request.time);
 
-      // O admin escreve o que precisar. O DONO só pode fazer uma coisa:
-      // CANCELAR um pedido que ele mesmo abriu e nunca pagou. A regra é
+      // O admin escreve o que precisar. O VENDEDOR (painel interno, tela
+      // Pedidos) só pode mexer no status e nos campos de controle de estoque
+      // que a propria tela escreve — nao pode tocar em itens, endereco,
+      // pagamento, etc. Tambem nao pode desfazer uma entrega ja confirmada
+      // (entregue -> cancelado): isso vira estorno de uma venda ja espelhada
+      // em `vendas` (canal 'site'), e so admin desfaz venda concluida — mesmo
+      // criterio ja usado em `vendas`. O DONO só pode fazer uma coisa:
+      // CANCELAR um pedido que ele mesmo abriu e nunca pagou. A regra e
       // deliberadamente estreita — só a chave "status" pode mudar, só para
       // 'cancelado', só saindo de 'aguardando_pagamento' e só enquanto o
       // provedor não aprovou. Depois de pago vira caso de estorno, não de
       // cancelamento, e aí é o admin quem resolve.
       allow update: if ehAdmin() ||
+        (ehVendedor() &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'atualizadoEm', 'estoqueBaixado', 'estoqueBaixadoEm', 'estoqueDevolvidoEm']) &&
+          request.resource.data.status in
+            ['aguardando_pagamento', 'pago', 'preparando', 'enviado', 'entregue', 'cancelado'] &&
+          !(resource.data.status == 'entregue' && request.resource.data.status == 'cancelado')) ||
         (estaLogado() &&
           resource.data.uidComprador == request.auth.uid &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
@@ -361,15 +376,26 @@ service cloud.firestore {
     }
 
     // ── vendas/{id} ────────────────────────────────────────────────────
-    // Vendas da LOJA FISICA (canal 'loja'). Vendas do site NAO entram aqui —
-    // ficam em `pedidos` e sao lidas/derivadas pelo painel do sistema.
+    // Vendas da LOJA FISICA (canal 'loja') sao criadas pelo PDV, com
+    // vendedor_uid == autor (entra na comissao, ver `comissoes`). Vendas do
+    // canal 'site' sao um ESPELHO somente-leitura de pedido do site
+    // confirmado como entregue (id determinístico `site_{pedidoId}`,
+    // gravado pela tela Pedidos) — sem vendedor_uid (nao gera comissao;
+    // `comissoes` so soma canal 'loja' de qualquer forma) e sem numeracao
+    // sequencial propria (fica so no historico, identificado pelo codigo
+    // do pedido). So admin desfaz uma venda concluida (ambos os canais).
     match /vendas/{id} {
       allow read: if ehAdmin()
-        || (ehVendedor() && resource.data.vendedor_uid == request.auth.uid);
+        || (ehVendedor() && resource.data.vendedor_uid == request.auth.uid)
+        || (ehVendedor() && resource.data.canal == 'site');
       allow create: if ehAdmin()
         || (ehVendedor()
             && request.resource.data.canal == 'loja'
             && request.resource.data.vendedor_uid == request.auth.uid
+            && request.resource.data.status == 'concluida')
+        || (ehStaff()
+            && request.resource.data.canal == 'site'
+            && request.resource.data.vendedor_uid == null
             && request.resource.data.status == 'concluida');
       allow update: if ehAdmin();
       allow delete: if false;

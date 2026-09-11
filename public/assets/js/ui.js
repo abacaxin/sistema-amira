@@ -6,7 +6,7 @@ const NAV = [
   ["caixa", "Caixa", "/caixa"],
   ["produtos", "Produtos", "/produtos", true],
   ["vendas", "Vendas", "/vendas"],
-  ["pedidos", "Pedidos", "/pedidos", true],
+  ["pedidos", "Pedidos", "/pedidos"],
   ["comissoes", "Comissoes", "/comissoes"],
   ["indicadores", "Indicadores", "/indicadores", true],
   ["usuarios", "Usuarios", "/usuarios", true],

@@ -57,7 +57,7 @@ function normalizarCodigoRetirada(s) {
   return String(s || "").trim().toUpperCase().replace(/^AMR-?/, "").replace(/[^A-Z0-9]/g, "");
 }
 
-const { perfil } = await requireAuth({ roles: ["admin"] });
+const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "pedidos" });
 root.innerHTML = `<div class="card">Carregando...</div>`;
 

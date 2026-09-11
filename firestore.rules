@@ -116,7 +116,10 @@ service cloud.firestore {
         (!('consentimentoVersao' in d) || (d.consentimentoVersao is string && d.consentimentoVersao.size() <= 20));
     }
     match /usuarios/{uid} {
-      allow read: if ehDono(uid) || ehAdmin();
+      // Vendedor le perfil de clientes pra conferir nome/telefone na tela de
+      // Pedidos (confirmacao de retirada/entrega) — mesmo nivel de confianca
+      // ja dado a ele em produtos/pedidos.
+      allow read: if ehDono(uid) || ehAdmin() || ehVendedor();
 
       // Cliente do site cria o próprio perfil.
       allow create: if ehDono(uid) &&
@@ -248,7 +251,7 @@ service cloud.firestore {
     // derivando totais de `produtos`).
     match /pedidos/{pedidoId} {
       allow read: if estaLogado() &&
-        (resource.data.uidComprador == request.auth.uid || ehAdmin());
+        (resource.data.uidComprador == request.auth.uid || ehAdmin() || ehVendedor());
       allow create: if estaLogado() &&
         emailVerificado() &&
         request.resource.data.keys().hasOnly(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm', 'ref', 'refEm']) &&
@@ -295,13 +298,21 @@ service cloud.firestore {
         (!('refEm' in request.resource.data) ||
           request.resource.data.refEm == request.time);
 
-      // O admin escreve o que precisar. O DONO só pode fazer uma coisa:
-      // CANCELAR um pedido que ele mesmo abriu e nunca pagou. A regra é
-      // deliberadamente estreita — só a chave "status" pode mudar, só para
-      // 'cancelado', só saindo de 'aguardando_pagamento' e só enquanto o
-      // provedor não aprovou. Depois de pago vira caso de estorno, não de
-      // cancelamento, e aí é o admin quem resolve.
+      // O admin escreve o que precisar. O VENDEDOR (painel interno, tela
+      // Pedidos) só pode mexer no status e nos campos de controle de estoque
+      // que a propria tela escreve — nao pode tocar em itens, endereco,
+      // pagamento, etc. O DONO só pode fazer uma coisa: CANCELAR um pedido
+      // que ele mesmo abriu e nunca pagou. A regra e deliberadamente
+      // estreita — só a chave "status" pode mudar, só para 'cancelado', só
+      // saindo de 'aguardando_pagamento' e só enquanto o provedor não
+      // aprovou. Depois de pago vira caso de estorno, não de cancelamento,
+      // e aí é o admin quem resolve.
       allow update: if ehAdmin() ||
+        (ehVendedor() &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'atualizadoEm', 'estoqueBaixado', 'estoqueBaixadoEm', 'estoqueDevolvidoEm']) &&
+          request.resource.data.status in
+            ['aguardando_pagamento', 'pago', 'preparando', 'enviado', 'entregue', 'cancelado']) ||
         (estaLogado() &&
           resource.data.uidComprador == request.auth.uid &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&

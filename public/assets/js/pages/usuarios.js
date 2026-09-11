@@ -21,7 +21,7 @@ async function carregar() {
   root.innerHTML = `
     <div class="card"><button class="btn" id="novo">+ Novo vendedor</button></div>
     <div class="card">
-      <table>
+      <div class="tabela-wrap"><table>
         <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Comissao</th><th>Ativo</th><th></th></tr></thead>
         <tbody>
           ${us
@@ -43,7 +43,7 @@ async function carregar() {
             )
             .join("")}
         </tbody>
-      </table>
+      </table></div>
     </div>`;
 
   document.getElementById("novo").onclick = novo;

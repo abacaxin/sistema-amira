@@ -112,13 +112,13 @@ async function carregar() {
     <div class="card">
       <strong>Comissoes &mdash; ${periodo}</strong>
       <p class="muted">Considera apenas vendas da loja fisica concluidas. A base pode variar por vendedor.</p>
-      <table>
+      <div class="tabela-wrap"><table>
         <thead><tr>
           <th>Vendedor</th><th class="right">Qtd</th><th class="right">Total vendas</th><th class="right">Comissao</th><th>Situacao</th>
           ${ehAdm ? "<th></th>" : ""}
         </tr></thead>
         <tbody>${linhas || `<tr><td class="muted">Sem vendas no periodo.</td></tr>`}</tbody>
-      </table>
+      </table></div>
     </div>`;
 
   if (ehAdm) {

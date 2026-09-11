@@ -130,7 +130,7 @@ function renderLista() {
   if (filtroCodigo) arr = arr.filter((p) => p.id.toLowerCase().includes(filtroCodigo));
 
   document.getElementById("lista").innerHTML = `
-    <table>
+    <div class="tabela-wrap"><table>
       <thead><tr>
         <th>Codigo</th><th>Data</th><th>Comprador</th><th>Entrega</th><th class="right">Itens</th>
         <th class="right">Total (itens)</th><th>Ref</th><th>Estoque</th><th>Status</th><th></th>
@@ -156,7 +156,7 @@ function renderLista() {
             .join("") || `<tr><td colspan="10" class="muted">${filtroCodigo || filtroStatus ? "Nenhum pedido encontrado nos ultimos 300 com esse filtro." : "Nenhum pedido."}</td></tr>`
         }
       </tbody>
-    </table>`;
+    </table></div>`;
 
   document.querySelectorAll(".ver").forEach(
     (b) => (b.onclick = () => detalhe(pedidos.find((p) => p.id === b.dataset.id)))

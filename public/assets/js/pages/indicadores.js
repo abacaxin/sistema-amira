@@ -37,7 +37,7 @@ root.innerHTML = `
 
   <div class="card">
     <strong>Apuracao de comissoes &mdash; pedidos do site</strong>
-    <p class="muted">Considera <code>pedidos</code> com um <code>ref</code> de indicador (link <code>?ref=</code>), status diferente de cancelado. O total e derivado do catalogo atual; iPhone nao entra na base. Pagamento e manual.</p>
+    <p class="muted">Considera <code>pedidos</code> com um <code>ref</code> de indicador (link <code>?ref=</code>) e status pago. O total e derivado do catalogo atual; iPhone nao entra na base. Pagamento e manual.</p>
     <div class="row">
       <div><label>Periodo</label><input type="month" id="periodo" value="${periodo}"></div>
       <div style="align-self:end"><button class="btn" id="apurar">Apurar</button></div>
@@ -74,7 +74,7 @@ async function carregar() {
 }
 
 // Total vendido por indicador, olhando TODO o historico de `pedidos` com
-// `ref` (nao cancelados) — nao depende do filtro de periodo da apuracao de
+// `ref` com status pago — nao depende do filtro de periodo da apuracao de
 // comissao. Total bruto dos itens (sem excluir iPhone), pois aqui e "quanto
 // o indicador vendeu", nao a base de comissao.
 async function carregarTotaisVendidos() {
@@ -86,7 +86,7 @@ async function carregarTotaisVendidos() {
     const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
     const pedidos = pedidosSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((p) => p.status !== "cancelado");
+      .filter((p) => p.status === "pago");
 
     vendidoPorCodigo = {};
     totalGeralVendido = 0;
@@ -233,7 +233,7 @@ async function apurar() {
   const camadaPrincipalSlug = camadasSnap.docs.length ? (camadasSnap.docs[0].data().slug || null) : null;
   const nomePorCodigo = Object.fromEntries(indicadores.map((r) => [r.codigo, r]));
 
-  const comRef = pedidos.filter((p) => p.ref && p.status !== "cancelado");
+  const comRef = pedidos.filter((p) => p.ref && p.status === "pago");
 
   const agg = {};
   for (const p of comRef) {

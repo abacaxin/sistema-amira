@@ -241,6 +241,9 @@ function detalhe(p, statusSugerido) {
         <label>Mudar para</label>
         <select id="novo-status">
           ${STATUS.filter((s) => s !== p.status)
+            // Desfazer uma entrega ja confirmada (estorno) e so-admin — nao
+            // ofereça a opcao pro vendedor (as rules ja bloqueiam mesmo).
+            .filter((s) => !(perfil.role !== "admin" && p.status === "entregue" && s === "cancelado"))
             .map((s) => `<option value="${s}" ${s === statusSugerido ? "selected" : ""}>${STATUS_LABEL[s]}</option>`)
             .join("")}
         </select>
@@ -285,12 +288,27 @@ function detalhe(p, statusSugerido) {
   };
 }
 
+// Id deterministico (nao um addDoc aleatorio): permite achar/atualizar o
+// espelho em `vendas` de um pedido sem precisar de uma query dentro da
+// transacao (o SDK cliente nao suporta query em runTransaction).
+function vendaRefDoPedido(pedidoId) {
+  return doc(db, "vendas", `site_${pedidoId}`);
+}
+
 async function mudarStatus(pedido, novoStatus) {
   const ref = doc(db, "pedidos", pedido.id);
   const vaiConsumir = CONSOME_ESTOQUE.has(novoStatus) && !pedido.estoqueBaixado;
   const vaiDevolver = novoStatus === "cancelado" && pedido.estoqueBaixado === true;
+  // Confirmar entrega espelha o pedido em `vendas` (canal "site"), pra
+  // aparecer na tela de Vendas — sem numero de venda da loja e sem
+  // vendedor_uid (nao gera comissao). Desfazer uma entrega ja confirmada
+  // (entregue -> cancelado, so admin: ver firestore.rules) cancela esse
+  // espelho tambem, senao a venda ficaria "concluida" errado.
+  const vendaRef = vendaRefDoPedido(pedido.id);
+  const vaiCriarVenda = novoStatus === "entregue";
+  const vaiCancelarVenda = novoStatus === "cancelado" && pedido.status === "entregue";
 
-  if (!vaiConsumir && !vaiDevolver) {
+  if (!vaiConsumir && !vaiDevolver && !vaiCriarVenda && !vaiCancelarVenda) {
     await updateDoc(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
     return;
   }
@@ -299,15 +317,60 @@ async function mudarStatus(pedido, novoStatus) {
     const pSnap = await t.get(ref);
     if (!pSnap.exists()) throw new Error("Pedido nao encontrado.");
     const ped = pSnap.data();
+    const vendaSnap = (vaiCriarVenda || vaiCancelarVenda) ? await t.get(vendaRef) : null;
+
+    function aplicarEfeitoVenda() {
+      if (vaiCriarVenda && !(vendaSnap && vendaSnap.exists())) {
+        const { linhas, subtotal } = derivarItensPedido(ped, produtosMap);
+        t.set(vendaRef, {
+          canal: "site",
+          numero: null,
+          pedidoId: pedido.id,
+          codigoRetirada: codigoRetirada(pedido.id),
+          data: serverTimestamp(),
+          criado_em: serverTimestamp(),
+          confirmado_por_uid: perfil.id,
+          confirmado_por_nome: perfil.nome || "",
+          vendedor_uid: null,
+          vendedor_nome: null,
+          cliente: compradores[ped.uidComprador]?.nome || null,
+          itens: linhas.map((l) => ({
+            produtoId: l.produtoId,
+            nome: l.nome,
+            qtd: l.qtd,
+            preco_unit: l.precoUnit,
+            subtotal: l.subtotal,
+          })),
+          subtotal,
+          desconto: 0,
+          total: subtotal,
+          pagamentos: ped.pagamento?.metodo ? [{ forma: ped.pagamento.metodo, valor: subtotal }] : [],
+          status: "concluida",
+        });
+      }
+      if (vaiCancelarVenda && vendaSnap && vendaSnap.exists() && vendaSnap.data().status !== "cancelada") {
+        t.update(vendaRef, { status: "cancelada", cancelada_em: serverTimestamp(), cancelada_por: perfil.id });
+      }
+    }
 
     // Reconfirma o estado do estoque no momento da transacao (evita corrida).
     const jaBaixado = ped.estoqueBaixado === true;
     if (vaiConsumir && jaBaixado) {
       t.update(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+      aplicarEfeitoVenda();
       return;
     }
     if (vaiDevolver && !jaBaixado) {
       t.update(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+      aplicarEfeitoVenda();
+      return;
+    }
+    if (!vaiConsumir && !vaiDevolver) {
+      // Estoque nao muda nessa transicao (ex.: "entregue" chegando depois
+      // do estoque ja ter sido baixado antes, num status anterior) — so o
+      // efeito em `vendas` importa aqui.
+      t.update(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+      aplicarEfeitoVenda();
       return;
     }
 
@@ -347,6 +410,7 @@ async function mudarStatus(pedido, novoStatus) {
         estoqueBaixadoEm: serverTimestamp(),
         atualizadoEm: serverTimestamp(),
       });
+      aplicarEfeitoVenda();
     } else {
       for (const { g, pr, snap } of lidos) {
         if (!snap.exists()) continue;
@@ -359,6 +423,7 @@ async function mudarStatus(pedido, novoStatus) {
         estoqueDevolvidoEm: serverTimestamp(),
         atualizadoEm: serverTimestamp(),
       });
+      aplicarEfeitoVenda();
     }
   });
 }

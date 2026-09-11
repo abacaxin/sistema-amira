@@ -68,7 +68,7 @@ async function carregar() {
             vendas
               .map(
                 (v) => `<tr>
-                  <td>${v.numero ?? "-"}</td>
+                  <td>${v.numero ?? (v.codigoRetirada ? escapeHtml(v.codigoRetirada) : "-")}</td>
                   <td>${fmtData(v.data)}</td>
                   <td>${CANAIS[v.canal] || v.canal}</td>
                   <td>${escapeHtml(v.vendedor_nome || "-")}</td>
@@ -103,7 +103,7 @@ async function carregarTotalIndicadores(lista) {
     const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
     const pedidos = pedidosSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((p) => p.status !== "cancelado");
+      .filter((p) => p.status === "pago");
 
     let total = 0;
     for (const p of pedidos) total = round2(total + derivarItensPedido(p, produtosMap).subtotal);
@@ -111,7 +111,7 @@ async function carregarTotalIndicadores(lista) {
     lista.innerHTML = `
       <div class="card">
         <strong>Vendas via indicadores (link ?ref= do site)</strong>
-        <p class="muted">Soma de todos os pedidos do site com um indicador atribuido, status diferente de cancelado. Total derivado dos precos atuais do catalogo.</p>
+        <p class="muted">Soma de todos os pedidos do site com um indicador atribuido e status pago. Total derivado dos precos atuais do catalogo.</p>
         <div class="totais big"><span>Total vendido</span><span>${brl(total)}</span></div>
         <p class="muted">Pedidos considerados: ${pedidos.length}. Detalhamento por indicador em <a href="/indicadores">Indicadores</a>.</p>
       </div>`;
@@ -122,8 +122,19 @@ async function carregarTotalIndicadores(lista) {
 
 function detalhe(v) {
   const c = document.createElement("div");
+  const infoCanal =
+    v.canal === "site"
+      ? `${v.codigoRetirada ? ` &middot; pedido <code>${escapeHtml(v.codigoRetirada)}</code>` : ""}` +
+        `${v.cliente ? ` &middot; cliente ${escapeHtml(v.cliente)}` : ""}` +
+        `${v.confirmado_por_nome ? ` &middot; retirada confirmada por ${escapeHtml(v.confirmado_por_nome)}` : ""}`
+      : ` &middot; vendedor ${escapeHtml(v.vendedor_nome || "-")}`;
   c.innerHTML = `
-    <p class="muted">${fmtData(v.data)} &middot; ${CANAIS[v.canal] || v.canal} &middot; vendedor ${escapeHtml(v.vendedor_nome || "-")}</p>
+    <p class="muted">${fmtData(v.data)} &middot; ${CANAIS[v.canal] || v.canal}${infoCanal}</p>
+    ${
+      v.canal === "site" && v.status === "concluida"
+        ? `<p class="muted">Pedido do site entregue/retirado. Pra desfazer, cancele o pedido na tela Pedidos — isso devolve o estoque e atualiza aqui tambem.</p>`
+        : ""
+    }
     <table><tbody>
       ${(v.itens || [])
         .map((it) => `<tr><td>${it.qtd}x ${escapeHtml(it.nome)}</td><td class="right">${brl(it.subtotal)}</td></tr>`)
@@ -141,9 +152,9 @@ function detalhe(v) {
         : ""
     }`;
 
-  const podeCancelar = ehAdm && v.status === "concluida";
+  const podeCancelar = ehAdm && v.status === "concluida" && v.canal !== "site";
   modal({
-    titulo: `Venda #${v.numero ?? ""}`,
+    titulo: `Venda ${v.numero != null ? "#" + v.numero : (v.codigoRetirada || "")}`,
     corpo: c,
     textoConfirmar: "Cancelar venda",
     textoCancelar: "Fechar",

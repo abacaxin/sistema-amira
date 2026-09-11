@@ -61,6 +61,7 @@ root.innerHTML = `
         <input id="fcodigo" placeholder="cole ou digite o codigo do pedido">
       </div>
       <div style="flex:0 0 auto"><button class="btn" id="atualizar">Atualizar</button></div>
+      <div style="flex:0 0 auto"><button class="btn ghost" id="ler-qrcode">Ler QR Code (retirada)</button></div>
     </div>
     <p class="muted" style="margin:8px 0 0">Ultimos 300 pedidos do site. O "codigo" e o mesmo numero de pedido mostrado pro cliente na confirmacao de compra no site. Total derivado dos precos atuais do catalogo (o pedido do site nao guarda valor) e sem frete.</p>
   </div>
@@ -87,6 +88,7 @@ document.getElementById("fcodigo").onkeydown = async (e) => {
   }
 };
 document.getElementById("atualizar").onclick = carregar;
+document.getElementById("ler-qrcode").onclick = abrirScannerQr;
 
 await carregar();
 
@@ -161,7 +163,7 @@ function renderLista() {
   );
 }
 
-function detalhe(p) {
+function detalhe(p, statusSugerido) {
   const { linhas, subtotal, temItemSemCatalogo } = derivarItensPedido(p, produtosMap);
   const u = compradores[p.uidComprador];
   const end = p.endereco;
@@ -201,7 +203,9 @@ function detalhe(p) {
       <div>
         <label>Mudar para</label>
         <select id="novo-status">
-          ${STATUS.filter((s) => s !== p.status).map((s) => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join("")}
+          ${STATUS.filter((s) => s !== p.status)
+            .map((s) => `<option value="${s}" ${s === statusSugerido ? "selected" : ""}>${STATUS_LABEL[s]}</option>`)
+            .join("")}
         </select>
       </div>
       <div style="flex:0 0 auto"><button class="btn" id="aplicar-status">Aplicar</button></div>
@@ -320,4 +324,132 @@ async function mudarStatus(pedido, novoStatus) {
       });
     }
   });
+}
+
+// ── Leitor de QR Code (retirada na loja) ─────────────────────────────────
+// O QR mostrado ao cliente na confirmacao de retirada codifica o mesmo
+// "codigo do pedido" (id do documento) usado na busca manual acima — ou uma
+// URL do site que aponta pra essa confirmacao. Le pela camera com jsQR
+// (decodificacao pura, sem depender de BarcodeDetector do navegador), acha
+// o pedido e abre o modal de detalhe ja com "Entregue" pre-selecionado.
+async function abrirScannerQr() {
+  let jsQR;
+  try {
+    ({ jsQR } = await import("https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm"));
+  } catch (_) {
+    toast("Nao foi possivel carregar o leitor de QR Code (sem internet?).", "err");
+    return;
+  }
+
+  const c = document.createElement("div");
+  c.innerHTML = `
+    <p class="muted">Aponte a camera para o QR Code do pedido, mostrado ao cliente na confirmacao de retirada.</p>
+    <video id="qr-video" playsinline muted style="width:100%;border-radius:8px;background:#111;display:block"></video>
+    <p class="muted" id="qr-status">Iniciando camera...</p>
+    <div class="row" style="align-items:end;margin-top:6px">
+      <div style="flex:1">
+        <label>Ou digite/cole o codigo</label>
+        <input id="qr-manual" placeholder="codigo do pedido">
+      </div>
+      <div style="flex:0 0 auto"><button class="btn ghost" id="qr-buscar">Buscar</button></div>
+    </div>`;
+
+  const bg = modal({ titulo: "Ler QR Code do pedido", corpo: c, textoCancelar: "Fechar" });
+
+  const video = c.querySelector("#qr-video");
+  const status = c.querySelector("#qr-status");
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  let stream = null;
+  let rafId = null;
+  let parado = false;
+
+  function pararCamera() {
+    if (parado) return;
+    parado = true;
+    if (rafId) cancelAnimationFrame(rafId);
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+  }
+
+  bg.addEventListener("click", (e) => { if (e.target === bg) pararCamera(); });
+  bg.querySelector(".btn.ghost").addEventListener("click", pararCamera);
+
+  function tick() {
+    if (parado) return;
+    if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(img.data, img.width, img.height);
+      if (code && code.data) {
+        pararCamera();
+        bg.remove();
+        processarCodigoLido(code.data);
+        return;
+      }
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    video.srcObject = stream;
+    await video.play();
+    if (parado) { stream.getTracks().forEach((t) => t.stop()); return; } // modal fechado enquanto a camera abria
+    status.textContent = "Aponte a camera para o QR Code.";
+    rafId = requestAnimationFrame(tick);
+  } catch (_) {
+    status.textContent = "Nao foi possivel acessar a camera. Use o campo abaixo para digitar o codigo.";
+  }
+
+  c.querySelector("#qr-buscar").onclick = () => {
+    const v = c.querySelector("#qr-manual").value.trim();
+    if (!v) return;
+    pararCamera();
+    bg.remove();
+    processarCodigoLido(v);
+  };
+}
+
+/** Extrai o codigo do pedido de um texto de QR: pode ser o codigo puro ou uma URL do site. */
+function extrairCodigoPedido(texto) {
+  const t = String(texto || "").trim();
+  if (!t) return "";
+  try {
+    const u = new URL(t);
+    const porQuery = u.searchParams.get("pedido") || u.searchParams.get("codigo") || u.searchParams.get("id");
+    if (porQuery) return porQuery.trim();
+    const partes = u.pathname.split("/").filter(Boolean);
+    return partes.length ? partes[partes.length - 1].trim() : "";
+  } catch (_) {
+    return t; // nao e uma URL valida, assume que o proprio texto e o codigo
+  }
+}
+
+async function processarCodigoLido(textoLido) {
+  const codigo = extrairCodigoPedido(textoLido);
+  if (!codigo) {
+    toast("QR Code lido nao contem um codigo de pedido reconhecivel.", "err");
+    return;
+  }
+
+  let pedido = pedidos.find((p) => p.id === codigo);
+  if (!pedido) {
+    try {
+      const snap = await getDoc(doc(db, "pedidos", codigo));
+      if (snap.exists()) pedido = { id: snap.id, ...snap.data() };
+    } catch (_) {}
+  }
+  if (!pedido) {
+    toast(`Nenhum pedido encontrado com o codigo lido (${codigo.slice(0, 8)}...).`, "err");
+    return;
+  }
+
+  if (pedido.status === "entregue") toast("Este pedido ja esta marcado como entregue.", "warn");
+  else if (pedido.status === "cancelado") toast("Atencao: este pedido esta cancelado.", "warn");
+  else if (pedido.status === "aguardando_pagamento") toast("Atencao: este pedido ainda esta aguardando pagamento.", "warn");
+
+  detalhe(pedido, "entregue");
 }

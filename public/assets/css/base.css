@@ -114,16 +114,18 @@ tbody tr:hover { background: #f9f2f1; }
 @media (max-width: 820px) {
   .app { flex-direction: column; }
   .side { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; }
-  .side .brand { flex: 1; display: flex; align-items: center; gap: 10px; text-align: left; }
-  .side .brand-logo { width: 104px; margin: 0; }
+  .side .brand { flex: 1; display: flex; align-items: center; gap: 10px; text-align: left; padding: 12px 14px; }
+  .side .brand-logo { width: 44px; margin: 0; }
   .side .brand small { margin-top: 0; }
 
   /* Menu sanduiche: o checkbox fica escondido antes do resto no DOM; o
      label vira o botao (☰/✕) e liga/desliga nav + dados do usuario, que
-     ficam recolhidos por padrao pra nao empurrar o conteudo pra baixo. */
+     ficam recolhidos por padrao pra nao empurrar o conteudo pra baixo.
+     margin-left:auto empurra o botao pra ponta oposta da logo/texto,
+     em vez de ficar colado neles. */
   .nav-toggle-btn {
     display: flex; align-items: center; justify-content: center;
-    width: 40px; height: 40px; flex: 0 0 auto; margin-left: 10px;
+    width: 40px; height: 40px; flex: 0 0 auto; margin-left: auto;
     border-radius: 8px; background: rgba(255, 255, 255, .12);
     color: #fff; font-size: 19px; line-height: 1; cursor: pointer;
   }

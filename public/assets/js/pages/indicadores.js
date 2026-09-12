@@ -23,6 +23,26 @@ let indicadores = [];
 let vendidoPorCodigo = {}; // codigo -> { qtd, total } (todo o historico, sem filtro de periodo)
 let totalGeralVendido = 0;
 
+// "Pago" conta como venda de verdade — mas o pedido continua sendo
+// rastreado (preparando/enviado/entregue) DEPOIS de pago, entao o status
+// muda com o tempo conforme a retirada/entrega avanca. Filtrar so por
+// `status === "pago"` perdia o pedido assim que ele avancava pro proximo
+// status; o que importa e ter saido de aguardando_pagamento e nao ter sido
+// cancelado.
+function contaComoPago(status) {
+  return status !== "aguardando_pagamento" && status !== "cancelado";
+}
+
+// Camada principal (pra excluir iPhone da base de comissao) muda raramente
+// — busca uma vez e reaproveita, em vez de re-buscar a cada apuracao.
+let camadaPrincipalSlugCache;
+async function getCamadaPrincipalSlug() {
+  if (camadaPrincipalSlugCache !== undefined) return camadaPrincipalSlugCache;
+  const snap = await getDocs(query(collection(db, "camadas"), orderBy("ordem", "asc")));
+  camadaPrincipalSlugCache = snap.docs.length ? (snap.docs[0].data().slug || null) : null;
+  return camadaPrincipalSlugCache;
+}
+
 root.innerHTML = `
   <div class="card">
     <div class="row" style="align-items:center">
@@ -37,7 +57,7 @@ root.innerHTML = `
 
   <div class="card">
     <strong>Apuracao de comissoes &mdash; pedidos do site</strong>
-    <p class="muted">Considera <code>pedidos</code> com um <code>ref</code> de indicador (link <code>?ref=</code>) e status pago. O total e derivado do catalogo atual; iPhone nao entra na base. Pagamento e manual.</p>
+    <p class="muted">Considera <code>pedidos</code> com um <code>ref</code> de indicador (link <code>?ref=</code>) que ja foram pagos (aguardando pagamento e cancelados ficam de fora, mesmo depois do pedido avancar pra preparando/enviado/entregue). O total e derivado do catalogo atual; iPhone nao entra na base. Pagamento e manual.</p>
     <div class="row">
       <div><label>Periodo</label><input type="month" id="periodo" value="${periodo}"></div>
       <div style="align-self:end"><button class="btn" id="apurar">Apurar</button></div>
@@ -74,7 +94,7 @@ async function carregar() {
 }
 
 // Total vendido por indicador, olhando TODO o historico de `pedidos` com
-// `ref` com status pago — nao depende do filtro de periodo da apuracao de
+// `ref` ja pagos — nao depende do filtro de periodo da apuracao de
 // comissao. Total bruto dos itens (sem excluir iPhone), pois aqui e "quanto
 // o indicador vendeu", nao a base de comissao.
 async function carregarTotaisVendidos() {
@@ -86,7 +106,7 @@ async function carregarTotaisVendidos() {
     const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
     const pedidos = pedidosSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((p) => p.status === "pago");
+      .filter((p) => contaComoPago(p.status));
 
     vendidoPorCodigo = {};
     totalGeralVendido = 0;
@@ -118,7 +138,7 @@ function renderTabela() {
             .map((r) => {
               const v = vendidoPorCodigo[r.codigo] || { qtd: 0, total: 0 };
               return `<tr>
-                <td>${escapeHtml(r.nome || "-")}</td>
+                <td><button class="btn ghost perfil" data-id="${r.id}">${escapeHtml(r.nome || "-")}</button></td>
                 <td><code>${escapeHtml(r.codigo || "")}</code></td>
                 <td><button class="btn ghost copiar" data-cod="${escapeHtml(r.codigo || "")}">Copiar link</button></td>
                 <td class="right">${v.qtd}</td>
@@ -138,6 +158,9 @@ function renderTabela() {
 
   document.querySelectorAll(".editar").forEach(
     (b) => (b.onclick = () => editar(indicadores.find((r) => r.id === b.dataset.id)))
+  );
+  document.querySelectorAll(".perfil").forEach(
+    (b) => (b.onclick = () => verPerfil(indicadores.find((r) => r.id === b.dataset.id)))
   );
   document.querySelectorAll(".copiar").forEach(
     (b) => (b.onclick = async () => {
@@ -206,15 +229,100 @@ function editar(r) {
     };
 }
 
+// Perfil do indicador: vendas/comissao apurada num periodo escolhido (a
+// comissao em si e repassada manualmente, fora do sistema, uma vez por mes
+// — este numero e so a base de calculo) + uma caixa de anotacoes internas
+// persistida em indicadores/{id}.anotacoes.
+function verPerfil(r) {
+  const v = vendidoPorCodigo[r.codigo] || { qtd: 0, total: 0 };
+  const c = document.createElement("div");
+  c.innerHTML = `
+    <p class="muted">Codigo <code>${escapeHtml(r.codigo || "")}</code>
+      ${r.contato ? `&middot; ${escapeHtml(r.contato)}` : ""}
+      &middot; <span class="tag ${r.ativo === false ? "inativo" : "ativo"}">${r.ativo === false ? "inativo" : "ativo"}</span></p>
+
+    <div class="row" style="align-items:end">
+      <div><label>Periodo</label><input type="month" id="pf-periodo" value="${periodo}"></div>
+      <div style="flex:0 0 auto"><button class="btn ghost" id="pf-ver">Ver periodo</button></div>
+    </div>
+    <div id="pf-stats" style="margin-top:10px">Apurando...</div>
+
+    <div class="totais big" style="margin-top:10px">
+      <span>Total vendido (historico completo)</span><span>${brl(v.total)}</span>
+    </div>
+    <p class="muted">${v.qtd} pedido(s) pago(s) no historico. A comissao e repassada manualmente, uma vez por mes.</p>
+
+    <label style="margin-top:14px">Anotacoes</label>
+    <textarea id="pf-anotacoes" rows="4" placeholder="Anotacoes internas sobre este indicador (combinados, historico de pagamento, etc.)">${escapeHtml(r.anotacoes || "")}</textarea>`;
+
+  const bg = modal({
+    titulo: `Perfil — ${r.nome || r.codigo}`,
+    corpo: c,
+    textoConfirmar: "Salvar anotacoes",
+    textoCancelar: "Fechar",
+    onConfirmar: async () => {
+      const anotacoes = c.querySelector("#pf-anotacoes").value.trim();
+      await updateDoc(doc(db, "indicadores", r.id), {
+        anotacoes,
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: perfil.id,
+      });
+      r.anotacoes = anotacoes;
+      toast("Anotacoes salvas.", "ok");
+    },
+  });
+
+  async function apurarPeriodoPerfil() {
+    const stats = c.querySelector("#pf-stats");
+    stats.innerHTML = "Apurando...";
+    const per = c.querySelector("#pf-periodo").value || periodo;
+    const { inicio, fim } = periodoParaIntervalo(per);
+    try {
+      const [pedidosSnap, produtosSnap, camadaPrincipalSlug] = await Promise.all([
+        getDocs(query(
+          collection(db, "pedidos"),
+          where("criadoEm", ">=", Timestamp.fromDate(inicio)),
+          where("criadoEm", "<", Timestamp.fromDate(fim)),
+          orderBy("criadoEm", "desc")
+        )),
+        getDocs(collection(db, "produtos")),
+        getCamadaPrincipalSlug(),
+      ]);
+      const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+      const pedidos = pedidosSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((p) => p.ref === r.codigo && contaComoPago(p.status));
+
+      let qtd = 0;
+      let base = 0;
+      for (const p of pedidos) {
+        qtd++;
+        base = round2(base + baseElegivelIndicador(p, produtosMap, { camadaPrincipalSlug, excluirSlugs }).base);
+      }
+      const comissao = round2(base * pct / 100);
+
+      stats.innerHTML = `
+        <div class="totais"><span>Pedidos pagos no periodo</span><span>${qtd}</span></div>
+        <div class="totais"><span>Base elegivel (sem iPhone)</span><span>${brl(base)}</span></div>
+        <div class="totais big"><span>Comissao a receber (${pct}%)</span><span>${brl(comissao)}</span></div>`;
+    } catch (e) {
+      stats.innerHTML = `<p style="color:var(--warn)">Nao foi possivel apurar (${escapeHtml(e?.message || "")}).</p>`;
+    }
+  }
+
+  c.querySelector("#pf-ver").onclick = apurarPeriodoPerfil;
+  apurarPeriodoPerfil();
+}
+
 async function apurar() {
   const box = document.getElementById("apuracao");
   box.innerHTML = `<p class="muted">Apurando...</p>`;
 
   const { inicio, fim } = periodoParaIntervalo(periodo);
 
-  let pedidos, produtosSnap, camadasSnap;
+  let pedidos, produtosSnap, camadaPrincipalSlug;
   try {
-    [pedidos, produtosSnap, camadasSnap] = await Promise.all([
+    [pedidos, produtosSnap, camadaPrincipalSlug] = await Promise.all([
       getDocs(query(
         collection(db, "pedidos"),
         where("criadoEm", ">=", Timestamp.fromDate(inicio)),
@@ -222,7 +330,7 @@ async function apurar() {
         orderBy("criadoEm", "desc")
       )).then((s) => s.docs.map((d) => ({ id: d.id, ...d.data() }))),
       getDocs(collection(db, "produtos")),
-      getDocs(query(collection(db, "camadas"), orderBy("ordem", "asc"))),
+      getCamadaPrincipalSlug(),
     ]);
   } catch (e) {
     box.innerHTML = `<p style="color:var(--warn)">Nao foi possivel apurar (${escapeHtml(e?.message || "")}).</p>`;
@@ -230,10 +338,9 @@ async function apurar() {
   }
 
   const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
-  const camadaPrincipalSlug = camadasSnap.docs.length ? (camadasSnap.docs[0].data().slug || null) : null;
   const nomePorCodigo = Object.fromEntries(indicadores.map((r) => [r.codigo, r]));
 
-  const comRef = pedidos.filter((p) => p.ref && p.status === "pago");
+  const comRef = pedidos.filter((p) => p.ref && contaComoPago(p.status));
 
   const agg = {};
   for (const p of comRef) {

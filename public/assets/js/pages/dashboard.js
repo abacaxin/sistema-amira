@@ -33,10 +33,9 @@ const ticket = qtdHoje ? totalHoje / qtdHoje : 0;
 const porCanal = {};
 vendasHoje.forEach((v) => (porCanal[v.canal] = (porCanal[v.canal] || 0) + (v.total || 0)));
 
-// ---- caixa aberto do usuario ----
+// ---- caixa aberto (unico pra loja toda, nao "do usuario") ----
 const caixaDoc = (await getDocs(query(
   collection(db, "caixa"),
-  where("aberto_por_uid", "==", perfil.id),
   where("status", "==", "aberto")
 ))).docs[0];
 const caixa = caixaDoc ? caixaDoc.data() : null;
@@ -75,8 +74,8 @@ root.innerHTML = `
     <strong>Caixa</strong>
     <p class="${caixa ? "" : "muted"}">${
       caixa
-        ? `Aberto em ${fmtData(caixa.aberto_em)} &middot; abertura ${brl(caixa.valor_abertura)}`
-        : "Nenhum caixa aberto por voce. Abra o caixa antes de vender em dinheiro."
+        ? `Aberto em ${fmtData(caixa.aberto_em)} por ${escapeHtml(caixa.aberto_por_nome || "-")} &middot; abertura ${brl(caixa.valor_abertura)}`
+        : "Nenhum caixa aberto. Abra o caixa antes de vender em dinheiro."
     }</p>
     <a class="btn sec" href="/caixa">Ir para o caixa</a>
   </div>

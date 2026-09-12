@@ -44,10 +44,11 @@ function infoParcela(valor, numParcelas) {
   return { jurosPct, valorComJuros, valorParcela };
 }
 
-// caixa aberto do usuario
+// Caixa e UNICO pra loja toda — nao e "do usuario logado". Qualquer
+// vendedor/admin vende contra o mesmo caixa aberto, seja quem for que
+// abriu de manha.
 const caixaDoc = (await getDocs(query(
   collection(db, "caixa"),
-  where("aberto_por_uid", "==", perfil.id),
   where("status", "==", "aberto")
 ))).docs[0];
 const caixaAbertoId = caixaDoc ? caixaDoc.id : null;

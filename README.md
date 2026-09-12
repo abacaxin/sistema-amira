@@ -24,7 +24,7 @@ Desde 2026-09 o sistema **compartilha o projeto Firebase do site** (`flora-5754a
 | Projeto Firebase | `flora-5754a` (o mesmo do site). O sistema e um **app separado** neste repo, publicado num alvo de Hosting proprio (`interno` -> `https://flora-5754a-interno.web.app`). |
 | Regras e indices | `firestore.rules` e `firestore.indexes.json` **deste repo sao os canonicos** (cobrem site + sistema). **Deploy de regras/indices sai daqui, nunca do repo do site.** A copia em `~/Documentos/Amira/` e so referencia. |
 | Papel de admin | `role: "admin"` no doc `usuarios/{uid}` (igual ao site). O outro papel e `role: "vendedor"`. |
-| Schema de produto | E o schema do SITE: `codigoBarras`, `precoVarejo`/`precoAtacado`, `estoqueVarejo`/`estoqueAtacado`, `filtros{}` por camada, `ativo`, `descontoAtivo`/`descontoPercentual`, etc. Ver secao 8. |
+| Schema de produto | E o schema do SITE: `codigoBarras`, `precoVarejo`/`precoAtacado` (dois valores), `estoque` (um so, sem separacao varejo/atacado), `filtros{}` por camada, `ativo`, `descontoAtivo`/`descontoPercentual`, etc. Ver secao 8. |
 | "Indicador" x "Revendedor" | Aqui, **indicador** = divulgador com link `?ref=` (colecao `indicadores`, sem login). No site, "revendedor" e outra coisa: comprador atacado com CNPJ (`usuarios.tipoConta == "revendedor"`). Nao confundir. |
 | Vendas do site | Ficam na colecao `pedidos` (criada pelo cliente no site, **sem valores monetarios** por design). O sistema **le e deriva** os totais do catalogo. Nao gravamos `pedidos` com preco e o checkout do site **nao** grava em `vendas`. |
 | App Check | O site tem App Check (reCAPTCHA v3) mas hoje **desligado** (chave placeholder). Quando ligar o Enforce, este app precisa registrar o proprio App Check no dominio `flora-5754a-interno`. |
@@ -36,10 +36,10 @@ Desde 2026-09 o sistema **compartilha o projeto Firebase do site** (`flora-5754a
 | Modulo | Papel | Descricao |
 |---|---|---|
 | Login / guarda de rota | — | Firebase Auth (e-mail/senha). So `admin` ou `vendedor` ativo entram; cliente do site que tentar logar e deslogado no submit com aviso. |
-| Painel (`dashboard`) | admin + vendedor | Vendas do dia, faturamento, ticket medio, comissao do mes, caixa aberto, vendas por canal, top produtos. Vendedor ve so os proprios numeros. |
-| PDV (`pdv`) | admin + vendedor | **Leitor USB de codigo de barras** (bipa `codigoBarras` -> carrinho) + busca por nome. Preco via `infoPreco`, estoque via `estoquePorModo`. Carrinho, desconto, formas de pagamento, baixa de `estoqueVarejo`, calculo de comissao e vinculo ao caixa — tudo numa transacao. Recibo para impressao. |
-| Caixa (`caixa`) | admin + vendedor | Abertura com fundo de troco, sangria/suprimento, fechamento com conferencia de dinheiro e divergencia, historico. Vendedor ve/gerencia so o proprio caixa. |
-| Vendas (`vendas`) | admin + vendedor | Historico com filtro por canal. Admin pode cancelar venda (devolve `estoqueVarejo` em transacao). Vendedor ve so as proprias. |
+| Painel (`dashboard`) | admin + vendedor | Vendas do dia, faturamento, ticket medio, comissao do mes, caixa aberto (unico pra loja toda), vendas por canal, top produtos. Vendedor ve so os proprios numeros de venda; comissao e caixa sao compartilhados. |
+| PDV (`pdv`) | admin + vendedor | **Leitor USB de codigo de barras** (bipa `codigoBarras` -> carrinho) + busca por nome. Preco via `infoPreco`, estoque via `estoquePorModo` (pool unico, sem separacao varejo/atacado). Carrinho, cliente/contato obrigatorios, desconto, formas de pagamento, baixa de `estoque`, calculo de comissao e vinculo ao caixa **unico/compartilhado** — tudo numa transacao. Recibo para impressao. |
+| Caixa (`caixa`) | admin + vendedor | Caixa **unico pra loja toda** (nao "do usuario") — so pode haver um aberto por vez, qualquer staff opera nele (abre, lanca sangria/suprimento, fecha), conferencia soma vendas de toda a equipe. Fechamento com conferencia de dinheiro e divergencia, historico compartilhado. |
+| Vendas (`vendas`) | admin + vendedor | Historico com filtro por canal e por forma de pagamento. Admin pode cancelar venda (devolve `estoque` em transacao). Vendedor ve as proprias vendas de loja + o espelho de pedidos do site. |
 | Comissoes (`comissoes`) | admin + vendedor | Relatorio por vendedor/periodo (so canal `loja`), fechamento de periodo e marcacao de pago. |
 | Produtos (`produtos`) | **so admin** | Editor completo no schema do site: `codigoBarras` (EAN) obrigatorio e unico, `filtros{}` por camada + categoria legado, precos varejo/atacado, estoques, desconto, `ativo`/`destaque`/`freteDisponivel`; fotos por URL. Acao em massa ativar/inativar. |
 | Indicadores (`indicadores`) | **so admin** | CRUD de indicadores (`nome, codigo, contato, ativo`), copia do link `?ref=`, e **apuracao por periodo**: le `pedidos` com `ref`, deriva a base elegivel do catalogo atual (`camadas` + `produtos`), exclui iPhone, aplica o percentual. Pagamento manual. |
@@ -211,9 +211,9 @@ Colecoes **do sistema**:
 Colecoes **do site** que o sistema consome:
 
 - `produtos/{id}`: `nome, codigoBarras, categoria (slug legado), filtros{ camadaSlug: [...] },
-  precoVarejo, precoAtacado, estoqueVarejo, estoqueAtacado, estoque (legado = varejo),
+  precoVarejo, precoAtacado, estoque (pool unico, sem separacao varejo/atacado),
   ativo (bool), descontoAtivo, descontoPercentual, imagemURL, peso, descricao, destaque,
-  freteDisponivel`. Helpers: `infoPreco(p, modo)`, `estoquePorModo(p, modo)`.
+  freteDisponivel`. Helpers: `infoPreco(p, modo)`, `estoquePorModo(p)`.
 - `camadas/{id}`: `nome, slug, ordem, opcoes[]` (a camada de `ordem` 1 e a principal;
   iPhone = opcao cujo slug comeca com "iphone").
 - `pedidos/{id}`: pedido do site, criado pelo cliente. **Sem valores monetarios.**
@@ -226,10 +226,13 @@ Colecoes **do site** que o sistema consome:
 ## 9. Notas de seguranca
 
 - O front-end usa so a config publica; o controle real esta nas **Security Rules**.
-- Vendedor le apenas as proprias vendas, os proprios caixas e a propria comissao.
-  `pedidos` do site so o admin le no sistema.
-- Um vendedor ativo so pode alterar `estoqueVarejo`/`estoqueAtacado`/`atualizadoEm` em
-  `produtos` (baixa do PDV) — nada mais.
+- Vendedor le a propria comissao (nao a dos colegas), mas caixa e vendas sao
+  **compartilhados** (o caixa e unico pra loja toda) e `pedidos`/`usuarios` do
+  site tambem sao legiveis por vendedor (precisa pra tela de Pedidos —
+  confirmar retirada/entrega e ver nome/telefone do comprador).
+- Um vendedor ativo so pode alterar `estoque`/`atualizadoEm` em `produtos`
+  (baixa do PDV) — nada mais. Estoque e um pool unico (sem separacao
+  varejo/atacado); so o preco continua tendo dois valores.
 - `integracoes/*` sem leitura/escrita pelo cliente (`if false`) — reservado ao backend
   das fases 3/4.
 - **Deploy de `firestore.rules`/`firestore.indexes.json` so a partir deste repo.**

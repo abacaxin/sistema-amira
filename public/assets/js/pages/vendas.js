@@ -215,9 +215,9 @@ async function cancelar(v) {
     });
     snaps.forEach((s, i) => {
       if (!s.exists()) return;
-      const atual = s.data().estoqueVarejo ?? s.data().estoque ?? 0;
+      const atual = s.data().estoque ?? 0;
       t.update(refs[i], {
-        estoqueVarejo: atual + v.itens[i].qtd,
+        estoque: atual + v.itens[i].qtd,
         atualizadoEm: serverTimestamp(),
       });
     });

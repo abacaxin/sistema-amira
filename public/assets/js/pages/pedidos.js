@@ -11,9 +11,10 @@ import { derivarItensPedido } from "../produtos-schema.js";
 // O pedido do site NAO guarda valor: itens = {produtoId, quantidade, modo}.
 // O total e derivado do catalogo atual (mesma ideia da apuracao de indicadores).
 // Baixa de estoque = opcao B: ao entrar num status que "consome" (pago em
-// diante), uma transacao decrementa estoqueVarejo/estoqueAtacado e marca
-// `estoqueBaixado: true` no pedido (evita baixa dupla). Cancelar um pedido que
-// ja baixou devolve o estoque. As rules ja permitem `update` de `pedidos` e de
+// diante), uma transacao decrementa `estoque` (pool unico, sem separacao
+// varejo/atacado) e marca `estoqueBaixado: true` no pedido (evita baixa
+// dupla). Cancelar um pedido que ja baixou devolve o estoque. As rules ja
+// permitem `update` de `pedidos` e de
 // `produtos` para admin — nada muda no site.
 
 const STATUS = ["aguardando_pagamento", "pago", "preparando", "enviado", "entregue", "cancelado"];
@@ -374,17 +375,16 @@ async function mudarStatus(pedido, novoStatus) {
       return;
     }
 
-    // Agrupa itens por produto + campo de estoque (varejo/atacado).
+    // Agrupa itens por produto — estoque e um so pool (nao ha mais
+    // separacao varejo/atacado), entao um pedido com os dois modos do
+    // mesmo produto soma tudo numa unica baixa/devolucao.
     const grupos = new Map();
     for (const it of ped.itens || []) {
-      const modo = it.modo === "atacado" ? "atacado" : "varejo";
-      const campo = modo === "atacado" ? "estoqueAtacado" : "estoqueVarejo";
       const qtd = Math.max(0, Math.trunc(Number(it.quantidade ?? it.qtd) || 0));
       if (!qtd || !it.produtoId) continue;
-      const key = it.produtoId + "|" + campo;
-      const g = grupos.get(key) || { produtoId: it.produtoId, campo, qtd: 0 };
+      const g = grupos.get(it.produtoId) || { produtoId: it.produtoId, qtd: 0 };
       g.qtd += qtd;
-      grupos.set(key, g);
+      grupos.set(it.produtoId, g);
     }
     const entradas = [...grupos.values()];
     const lidos = [];
@@ -396,13 +396,13 @@ async function mudarStatus(pedido, novoStatus) {
     if (vaiConsumir) {
       for (const { g, snap } of lidos) {
         if (!snap.exists()) throw new Error(`Um item aponta para um produto que nao existe mais (${g.produtoId}).`);
-        const atual = Number(snap.data()[g.campo] ?? snap.data().estoque ?? 0);
+        const atual = Number(snap.data().estoque ?? 0);
         if (atual < g.qtd)
           throw new Error(`Estoque insuficiente de "${snap.data().nome || g.produtoId}": tem ${atual}, precisa ${g.qtd}.`);
       }
       for (const { g, pr, snap } of lidos) {
-        const atual = Number(snap.data()[g.campo] ?? snap.data().estoque ?? 0);
-        t.update(pr, { [g.campo]: atual - g.qtd, atualizadoEm: serverTimestamp() });
+        const atual = Number(snap.data().estoque ?? 0);
+        t.update(pr, { estoque: atual - g.qtd, atualizadoEm: serverTimestamp() });
       }
       t.update(ref, {
         status: novoStatus,
@@ -414,8 +414,8 @@ async function mudarStatus(pedido, novoStatus) {
     } else {
       for (const { g, pr, snap } of lidos) {
         if (!snap.exists()) continue;
-        const atual = Number(snap.data()[g.campo] ?? snap.data().estoque ?? 0);
-        t.update(pr, { [g.campo]: atual + g.qtd, atualizadoEm: serverTimestamp() });
+        const atual = Number(snap.data().estoque ?? 0);
+        t.update(pr, { estoque: atual + g.qtd, atualizadoEm: serverTimestamp() });
       }
       t.update(ref, {
         status: novoStatus,

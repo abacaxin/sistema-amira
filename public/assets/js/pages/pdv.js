@@ -78,8 +78,8 @@ root.innerHTML = `
     </div>
     <div class="card">
       <strong>Venda</strong>
-      <label>Cliente (opcional)</label><input id="cliente" placeholder="Nome do cliente">
-      <label>Contato (opcional)</label><input id="cliente-contato" placeholder="Telefone / WhatsApp">
+      <label>Cliente</label><input id="cliente" placeholder="Nome do cliente" required>
+      <label>Contato</label><input id="cliente-contato" placeholder="Telefone / WhatsApp" required>
       <label>Observacoes (opcional)</label>
       <textarea id="observacoes" rows="2" placeholder="Ex.: embrulho pra presente, retirar as 18h..."></textarea>
       <div id="cart" style="margin-top:10px"></div>
@@ -324,6 +324,8 @@ function limpar() {
 
 async function finalizar() {
   if (!carrinho.length) return toast("Carrinho vazio.", "warn");
+  if (!$("#cliente").value.trim()) return toast("Informe o nome do cliente.", "err");
+  if (!$("#cliente-contato").value.trim()) return toast("Informe o contato do cliente.", "err");
   const { subtotal, desconto, total, pago } = calc();
   if (total < 0) return toast("Desconto maior que o subtotal.", "err");
   if (round2(pago) !== total)

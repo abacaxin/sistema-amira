@@ -131,6 +131,12 @@ function detalhe(v) {
   c.innerHTML = `
     <p class="muted">${fmtData(v.data)} &middot; ${CANAIS[v.canal] || v.canal}${infoCanal}</p>
     ${
+      v.canal !== "site" && (v.cliente || v.cliente_contato)
+        ? `<p class="muted">Cliente: ${escapeHtml(v.cliente || "-")}${v.cliente_contato ? ` &middot; ${escapeHtml(v.cliente_contato)}` : ""}</p>`
+        : ""
+    }
+    ${v.observacoes ? `<p class="muted">Obs: ${escapeHtml(v.observacoes)}</p>` : ""}
+    ${
       v.canal === "site" && v.status === "concluida"
         ? `<p class="muted">Pedido do site entregue/retirado. Pra desfazer, cancele o pedido na tela Pedidos — isso devolve o estoque e atualiza aqui tambem.</p>`
         : ""

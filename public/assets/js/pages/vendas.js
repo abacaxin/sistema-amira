@@ -29,7 +29,7 @@ root.innerHTML = `
       <select id="fcanal">
         <option value="">Todos os canais</option>
         ${Object.entries(CANAIS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
-        ${ehAdm ? `<option value="indicadores">Indicadores</option>` : ""}
+        <option value="indicadores">Indicadores</option>
       </select>
       <select id="fforma">
         <option value="">Todas as formas de pagamento</option>
@@ -107,9 +107,9 @@ async function carregar() {
   }
 }
 
-// So admin (a leitura de `pedidos` fora dos proprios so e liberada pra
-// admin nas rules). Mostra so o total geral vendido pelos indicadores —
-// o detalhamento por indicador fica na pagina Indicadores.
+// Disponivel pra qualquer staff (admin ou vendedor ja podem ler qualquer
+// pedido nas rules). Mostra so o total geral vendido pelos indicadores —
+// o detalhamento por indicador fica na pagina Indicadores (so admin).
 async function carregarTotalIndicadores(lista) {
   try {
     const [pedidosSnap, produtosSnap] = await Promise.all([

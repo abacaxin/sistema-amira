@@ -2,18 +2,25 @@ import { requireAuth } from "../auth.js";
 import { initShell, toast, modal, confirmar, escapeHtml, fmtData, erroCard } from "../ui.js";
 import {
   db, collection, getDocs, query, where, orderBy, limit,
-  doc, runTransaction, serverTimestamp,
+  doc, runTransaction, serverTimestamp, getConfigSistema,
 } from "../db.js";
 import { brl, round2 } from "../money.js";
 import { derivarItensPedido } from "../produtos-schema.js";
 
 const CANAIS = { loja: "Loja fisica", site: "Site proprio", mercado_livre: "Mercado Livre", shopee: "Shopee" };
+const FORMAS_LABEL = { dinheiro: "Dinheiro", pix: "Pix", debito: "Debito", credito: "Credito", crediario: "Crediario" };
 
 const { perfil } = await requireAuth();
 const ehAdm = perfil.role === "admin";
 const root = initShell({ perfil, active: "vendas" });
 
+const config = await getConfigSistema().catch(() => ({}));
+const formasPagamento = config.formas_pagamento?.length
+  ? config.formas_pagamento
+  : ["dinheiro", "pix", "debito", "credito", "crediario"];
+
 let filtroCanal = "";
+let filtroForma = "";
 let vendas = [];
 
 root.innerHTML = `
@@ -24,6 +31,10 @@ root.innerHTML = `
         ${Object.entries(CANAIS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
         ${ehAdm ? `<option value="indicadores">Indicadores</option>` : ""}
       </select>
+      <select id="fforma">
+        <option value="">Todas as formas de pagamento</option>
+        ${formasPagamento.map((f) => `<option value="${f}">${FORMAS_LABEL[f] || f}</option>`).join("")}
+      </select>
       <button class="btn" id="buscar">Atualizar</button>
     </div>
   </div>
@@ -31,6 +42,7 @@ root.innerHTML = `
 
 document.getElementById("buscar").onclick = () => {
   filtroCanal = document.getElementById("fcanal").value;
+  filtroForma = document.getElementById("fforma").value;
   carregar();
 };
 
@@ -56,6 +68,10 @@ async function carregar() {
 
   vendas = (await getDocs(q)).docs.map((d) => ({ id: d.id, ...d.data() }));
   if (!ehAdm && filtroCanal) vendas = vendas.filter((v) => v.canal === filtroCanal);
+  // Forma de pagamento e um filtro a mais, independente do canal (origem da
+  // venda) — uma venda pode ter mais de uma forma (pagamento dividido), por
+  // isso o filtro casa se QUALQUER uma das formas usadas bater.
+  if (filtroForma) vendas = vendas.filter((v) => (v.pagamentos || []).some((p) => p.forma === filtroForma));
 
   document.getElementById("lista").innerHTML = `
     <div class="card">
@@ -101,9 +117,14 @@ async function carregarTotalIndicadores(lista) {
       getDocs(collection(db, "produtos")),
     ]);
     const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    // "Pago" conta como venda de verdade — mas o pedido continua sendo
+    // rastreado (preparando/enviado/entregue) DEPOIS de pago, entao o
+    // status muda com o tempo. Filtrar so por `=== "pago"` perdia o pedido
+    // assim que ele avancava; o que importa e ter saido de
+    // aguardando_pagamento e nao ter sido cancelado.
     const pedidos = pedidosSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((p) => p.status === "pago");
+      .filter((p) => p.status !== "aguardando_pagamento" && p.status !== "cancelado");
 
     let total = 0;
     for (const p of pedidos) total = round2(total + derivarItensPedido(p, produtosMap).subtotal);
@@ -111,7 +132,7 @@ async function carregarTotalIndicadores(lista) {
     lista.innerHTML = `
       <div class="card">
         <strong>Vendas via indicadores (link ?ref= do site)</strong>
-        <p class="muted">Soma de todos os pedidos do site com um indicador atribuido e status pago. Total derivado dos precos atuais do catalogo.</p>
+        <p class="muted">Soma de todos os pedidos do site com um indicador atribuido, pagos (aguardando pagamento e cancelados ficam de fora). Total derivado dos precos atuais do catalogo.</p>
         <div class="totais big"><span>Total vendido</span><span>${brl(total)}</span></div>
         <p class="muted">Pedidos considerados: ${pedidos.length}. Detalhamento por indicador em <a href="/indicadores">Indicadores</a>.</p>
       </div>`;

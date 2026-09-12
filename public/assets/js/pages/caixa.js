@@ -11,10 +11,14 @@ const root = initShell({ perfil, active: "caixa" });
 
 render();
 
+// Caixa e UNICO pra loja toda, nao "do usuario logado" — antes cada conta
+// (admin/vendedor) enxergava so o proprio caixa, entao dava pra duas pessoas
+// abrirem caixas "paralelos" ao mesmo tempo sem perceber (dinheiro vendido
+// por uma ficava fora do caixa que a outra estava fechando). Agora so pode
+// haver um caixa "aberto" no sistema inteiro, e qualquer staff opera nele.
 async function caixaAberto() {
   const s = (await getDocs(query(
     collection(db, "caixa"),
-    where("aberto_por_uid", "==", perfil.id),
     where("status", "==", "aberto")
   ))).docs[0];
   return s ? { id: s.id, ...s.data() } : null;
@@ -33,7 +37,6 @@ async function renderBody() {
   const caixa = await caixaAberto();
   const hist = (await getDocs(query(
     collection(db, "caixa"),
-    where("aberto_por_uid", "==", perfil.id),
     orderBy("aberto_em", "desc"),
     limit(10)
   ))).docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -42,7 +45,7 @@ async function renderBody() {
     root.innerHTML = `
       <div class="card">
         <strong>Abrir caixa</strong>
-        <p class="muted">Voce nao tem caixa aberto.</p>
+        <p class="muted">Nao ha caixa aberto no momento.</p>
         <label>Valor de abertura (fundo de troco)</label>
         <input id="abertura" value="0" inputmode="decimal">
         <button class="btn" id="btn-abrir" style="margin-top:12px">Abrir caixa</button>
@@ -65,10 +68,12 @@ async function renderBody() {
     return;
   }
 
+  // Sem filtro por vendedor_uid: o caixa e compartilhado, entao a
+  // conferencia precisa somar as vendas de TODA a equipe que vendeu
+  // enquanto esse caixa esteve aberto, nao so as do usuario logado agora.
   const vendas = (await getDocs(query(
     collection(db, "vendas"),
-    where("caixa_id", "==", caixa.id),
-    where("vendedor_uid", "==", perfil.id)
+    where("caixa_id", "==", caixa.id)
   ))).docs
     .map((d) => d.data())
     .filter((v) => v.status === "concluida");
@@ -88,7 +93,7 @@ async function renderBody() {
   root.innerHTML = `
     <div class="card">
       <strong>Caixa aberto</strong>
-      <p class="muted">Aberto em ${fmtData(caixa.aberto_em)} &middot; abertura ${brl(caixa.valor_abertura)}</p>
+      <p class="muted">Aberto em ${fmtData(caixa.aberto_em)} por ${escapeHtml(caixa.aberto_por_nome || "-")} &middot; abertura ${brl(caixa.valor_abertura)}</p>
       <div class="grid cols-3">
         <div class="kpi"><div class="l">Vendas no caixa</div><div class="n">${vendas.length}</div></div>
         <div class="kpi"><div class="l">Total vendido</div><div class="n">${brl(totalVendas)}</div></div>
@@ -113,14 +118,14 @@ async function renderBody() {
     <div class="card">
       <strong>Movimentos</strong>
       <div class="tabela-wrap"><table>
-        <thead><tr><th>Quando</th><th>Tipo</th><th>Motivo</th><th class="right">Valor</th></tr></thead>
+        <thead><tr><th>Quando</th><th>Quem</th><th>Tipo</th><th>Motivo</th><th class="right">Valor</th></tr></thead>
         <tbody>
           ${
             movs
               .slice()
               .reverse()
               .map(
-                (m) => `<tr><td>${fmtData(m.em)}</td><td>${m.tipo}</td><td>${escapeHtml(m.motivo || "")}</td><td class="right">${brl(m.valor)}</td></tr>`
+                (m) => `<tr><td>${fmtData(m.em)}</td><td>${escapeHtml(m.nome || "-")}</td><td>${m.tipo}</td><td>${escapeHtml(m.motivo || "")}</td><td class="right">${brl(m.valor)}</td></tr>`
               )
               .join("") || `<tr><td class="muted">-</td></tr>`
           }
@@ -139,15 +144,16 @@ async function renderBody() {
 function histHtml(hist) {
   return `
     <div class="card">
-      <strong>Historico (seus ultimos caixas)</strong>
+      <strong>Historico (ultimos caixas)</strong>
       <div class="tabela-wrap"><table>
-        <thead><tr><th>Data</th><th>Abertura</th><th>Fechamento</th><th>Diferenca</th><th>Status</th></tr></thead>
+        <thead><tr><th>Data</th><th>Aberto por</th><th>Abertura</th><th>Fechamento</th><th>Diferenca</th><th>Status</th></tr></thead>
         <tbody>
           ${
             hist
               .map(
                 (c) => `<tr>
                   <td>${c.data || fmtData(c.aberto_em)}</td>
+                  <td>${escapeHtml(c.aberto_por_nome || "-")}</td>
                   <td>${brl(c.valor_abertura)}</td>
                   <td>${c.status === "fechado" ? brl(c.valor_fechamento_informado) : "-"}</td>
                   <td>${c.status === "fechado" ? brl(c.resumo?.diferenca || 0) : "-"}</td>
@@ -181,6 +187,7 @@ function movimento(tipo, caixaId) {
           valor,
           motivo: c.querySelector("#mm").value.trim(),
           uid: perfil.id,
+          nome: perfil.nome || "",
           em: Timestamp.now(),
         }),
       });
@@ -206,6 +213,7 @@ function fechar(caixa, esperadoDinheiro, parcial) {
       await updateDoc(doc(db, "caixa", caixa.id), {
         status: "fechado",
         fechado_por_uid: perfil.id,
+        fechado_por_nome: perfil.nome || "",
         fechado_em: serverTimestamp(),
         valor_fechamento_informado: informado,
         resumo: {

@@ -481,32 +481,41 @@ service cloud.firestore {
     }
 
     // ── caixa/{id} ──────────────────────────────────────────────────────
+    // Caixa e UNICO/compartilhado pra loja toda, independente de qual conta
+    // acessa — nao e "o caixa do vendedor X". Antes a regra so deixava um
+    // vendedor ler/mexer no caixa que ELE MESMO abriu, entao dava pra duas
+    // pessoas abrirem caixas "paralelos" sem perceber (a UI ja bloqueia via
+    // caixaAberto() sem filtro de uid, mas a regra precisa acompanhar: sem
+    // isso, um vendedor nao consegue nem VER o caixa que outra pessoa
+    // abriu, e caia tudo em permission-denied). Qualquer staff ativo pode
+    // ler, abrir (se nao houver nenhum aberto — a UI confere antes), lancar
+    // movimento e fechar; so nao pode reescrever quem abriu originalmente
+    // (aberto_por_uid nao muda depois de criado).
     match /caixa/{id} {
-      allow read: if ehAdmin()
-        || (ehVendedor() && resource.data.aberto_por_uid == request.auth.uid);
+      allow read: if ehStaff();
       allow create: if ehStaff()
         && request.resource.data.aberto_por_uid == request.auth.uid
         && request.resource.data.status == 'aberto';
-      allow update: if (ehAdmin() && request.resource.data.aberto_por_uid == resource.data.aberto_por_uid)
-        || (ehVendedor()
-            && resource.data.aberto_por_uid == request.auth.uid
-            && request.resource.data.aberto_por_uid == resource.data.aberto_por_uid);
+      allow update: if ehStaff()
+        && request.resource.data.aberto_por_uid == resource.data.aberto_por_uid;
       allow delete: if false;
     }
 
     // ── vendas/{id} ────────────────────────────────────────────────────
     // Vendas da LOJA FISICA (canal 'loja') sao criadas pelo PDV, com
-    // vendedor_uid == autor (entra na comissao, ver `comissoes`). Vendas do
-    // canal 'site' sao um ESPELHO somente-leitura de pedido do site
-    // confirmado como entregue (id determinístico `site_{pedidoId}`,
-    // gravado pela tela Pedidos) — sem vendedor_uid (nao gera comissao;
-    // `comissoes` so soma canal 'loja' de qualquer forma) e sem numeracao
-    // sequencial propria (fica so no historico, identificado pelo codigo
-    // do pedido). So admin desfaz uma venda concluida (ambos os canais).
+    // vendedor_uid == autor (entra na comissao, ver `comissoes`; a leitura
+    // e liberada pra qualquer staff — nao so o autor — porque o caixa e
+    // compartilhado: conferir o caixa exige somar as vendas de TODA a
+    // equipe que vendeu enquanto ele esteve aberto, nao so as de quem esta
+    // olhando agora). Vendas do canal 'site' sao um ESPELHO somente-leitura
+    // de pedido do site confirmado como entregue (id determinístico
+    // `site_{pedidoId}`, gravado pela tela Pedidos) — sem vendedor_uid (nao
+    // gera comissao; `comissoes` so soma canal 'loja' de qualquer forma) e
+    // sem numeracao sequencial propria (fica so no historico, identificado
+    // pelo codigo do pedido). So admin desfaz uma venda concluida (ambos os
+    // canais).
     match /vendas/{id} {
-      allow read: if ehAdmin()
-        || (ehVendedor() && resource.data.vendedor_uid == request.auth.uid)
-        || (ehVendedor() && resource.data.canal == 'site');
+      allow read: if ehStaff();
       allow create: if ehAdmin()
         || (ehVendedor()
             && request.resource.data.canal == 'loja'

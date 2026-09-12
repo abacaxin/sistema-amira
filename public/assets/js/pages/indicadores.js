@@ -1,5 +1,5 @@
 import { requireAuth } from "../auth.js";
-import { initShell, toast, modal, confirmar, escapeHtml } from "../ui.js";
+import { initShell, toast, modal, confirmar, escapeHtml, fmtData } from "../ui.js";
 import {
   db, collection, getDocs, query, orderBy, where, Timestamp,
   doc, addDoc, updateDoc, deleteDoc, serverTimestamp,
@@ -41,6 +41,20 @@ async function getCamadaPrincipalSlug() {
   const snap = await getDocs(query(collection(db, "camadas"), orderBy("ordem", "asc")));
   camadaPrincipalSlugCache = snap.docs.length ? (snap.docs[0].data().slug || null) : null;
   return camadaPrincipalSlugCache;
+}
+
+// Mesmo calculo do site (frontend/src/pages/services/pedidos.js:
+// codigoRetirada) e ja usado em pedidos.js — so pra referenciar o pedido
+// na lista de apuracao sem expor o id bruto do documento.
+const AMBIGUOS_RETIRADA = { O: "0", I: "1", L: "1", U: "V" };
+function codigoRetirada(pedidoId) {
+  const base = String(pedidoId || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase()
+    .slice(-6)
+    .padStart(6, "X");
+  const limpo = [...base].map((c) => AMBIGUOS_RETIRADA[c] || c).join("");
+  return `AMR-${limpo}`;
 }
 
 root.innerHTML = `
@@ -340,45 +354,42 @@ async function apurar() {
   const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
   const nomePorCodigo = Object.fromEntries(indicadores.map((r) => [r.codigo, r]));
 
-  const comRef = pedidos.filter((p) => p.ref && contaComoPago(p.status));
+  // Lista venda por venda (nao agregado por indicador) — o resumo por
+  // indicador fica so no "Perfil" de cada um (botao na tabela acima).
+  const comRef = pedidos
+    .filter((p) => p.ref && contaComoPago(p.status))
+    .map((p) => {
+      const { base } = baseElegivelIndicador(p, produtosMap, { camadaPrincipalSlug, excluirSlugs });
+      return { p, base, comissao: round2(base * pct / 100) };
+    });
 
-  const agg = {};
-  for (const p of comRef) {
-    const cod = String(p.ref);
-    const a = agg[cod] || (agg[cod] = { qtd: 0, base: 0, comissao: 0 });
-    const { base } = baseElegivelIndicador(p, produtosMap, { camadaPrincipalSlug, excluirSlugs });
-    a.qtd++;
-    a.base = round2(a.base + base);
-    a.comissao = round2(a.base * pct / 100);
-  }
-
-  const linhas = Object.entries(agg)
-    .sort((x, y) => (nomePorCodigo[x[0]]?.nome || x[0]).localeCompare(nomePorCodigo[y[0]]?.nome || y[0]))
-    .map(([cod, a]) => {
-      const rev = nomePorCodigo[cod];
+  const linhas = comRef
+    .map(({ p, base, comissao }) => {
+      const rev = nomePorCodigo[p.ref];
       return `<tr>
-        <td>${escapeHtml(rev?.nome || `(codigo ${cod} sem cadastro)`)}</td>
-        <td><code>${escapeHtml(cod)}</code></td>
-        <td class="right">${a.qtd}</td>
-        <td class="right">${brl(a.base)}</td>
-        <td class="right">${brl(a.comissao)}</td>
+        <td>${fmtData(p.criadoEm)}</td>
+        <td>${escapeHtml(rev?.nome || `(codigo ${escapeHtml(String(p.ref))} sem cadastro)`)}</td>
+        <td><code>${escapeHtml(String(p.ref))}</code></td>
+        <td><code title="id: ${escapeHtml(p.id)}">${codigoRetirada(p.id)}</code></td>
+        <td class="right">${brl(base)}</td>
+        <td class="right">${brl(comissao)}</td>
       </tr>`;
     })
     .join("");
 
-  const totBase = round2(Object.values(agg).reduce((s, a) => s + a.base, 0));
-  const totCom = round2(totBase * pct / 100);
+  const totBase = round2(comRef.reduce((s, l) => s + l.base, 0));
+  const totCom = round2(comRef.reduce((s, l) => s + l.comissao, 0));
 
   box.innerHTML = `
     <div class="tabela-wrap"><table>
       <thead><tr>
-        <th>Indicador</th><th>Codigo</th><th class="right">Pedidos</th>
+        <th>Data</th><th>Indicador</th><th>Codigo</th><th>Pedido</th>
         <th class="right">Base elegivel</th><th class="right">Comissao (${pct}%)</th>
       </tr></thead>
       <tbody>
-        ${linhas || `<tr><td colspan="5" class="muted">Sem pedidos com indicador no periodo.</td></tr>`}
-        ${linhas ? `<tr><td colspan="3"><strong>TOTAL</strong></td><td class="right"><strong>${brl(totBase)}</strong></td><td class="right"><strong>${brl(totCom)}</strong></td></tr>` : ""}
+        ${linhas || `<tr><td colspan="6" class="muted">Sem pedidos com indicador no periodo.</td></tr>`}
+        ${linhas ? `<tr><td colspan="4"><strong>TOTAL (${comRef.length})</strong></td><td class="right"><strong>${brl(totBase)}</strong></td><td class="right"><strong>${brl(totCom)}</strong></td></tr>` : ""}
       </tbody>
     </table></div>
-    <p class="muted">Total derivado dos precos atuais do catalogo (pedido do site nao guarda valor). Pagamento manual.</p>`;
+    <p class="muted">Total derivado dos precos atuais do catalogo (pedido do site nao guarda valor). Pagamento manual. Resumo por indicador no "Perfil" (clique no nome, na tabela acima).</p>`;
 }

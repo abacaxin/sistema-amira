@@ -78,7 +78,10 @@ root.innerHTML = `
     </div>
     <div class="card">
       <strong>Venda</strong>
-      <label>Cliente (opcional)</label><input id="cliente">
+      <label>Cliente (opcional)</label><input id="cliente" placeholder="Nome do cliente">
+      <label>Contato (opcional)</label><input id="cliente-contato" placeholder="Telefone / WhatsApp">
+      <label>Observacoes (opcional)</label>
+      <textarea id="observacoes" rows="2" placeholder="Ex.: embrulho pra presente, retirar as 18h..."></textarea>
       <div id="cart" style="margin-top:10px"></div>
       <label>Desconto (R$)</label><input id="desconto" value="0" inputmode="decimal">
       <label>Pagamentos</label>
@@ -310,6 +313,8 @@ function limpar() {
   carrinho = [];
   pagamentos = [];
   $("#cliente").value = "";
+  $("#cliente-contato").value = "";
+  $("#observacoes").value = "";
   $("#desconto").value = "0";
   renderResultados();
   renderCart();
@@ -342,6 +347,8 @@ async function finalizar() {
     }));
     const comissao = calcularComissao({ itens: itensVenda, subtotal, total, config, perfil });
     const cliente = $("#cliente").value.trim() || null;
+    const clienteContato = $("#cliente-contato").value.trim() || null;
+    const observacoes = $("#observacoes").value.trim() || null;
     const pagamentosSalvos = pagamentos.map((p) => {
       const base = { forma: p.forma, valor: round2(p.valor) };
       if (FORMAS_PARCELAVEIS.has(p.forma) && p.parcelas > 1) {
@@ -383,6 +390,8 @@ async function finalizar() {
         vendedor_uid: perfil.id,
         vendedor_nome: perfil.nome || "",
         cliente,
+        cliente_contato: clienteContato,
+        observacoes,
         itens: itensVenda,
         subtotal,
         desconto,
@@ -396,7 +405,7 @@ async function finalizar() {
     });
 
     toast(`Venda #${numero} registrada.`, "ok");
-    recibo({ numero, itens: itensVenda, subtotal, desconto, total, pagamentos: pagamentosSalvos, cliente });
+    recibo({ numero, itens: itensVenda, subtotal, desconto, total, pagamentos: pagamentosSalvos, cliente, clienteContato, observacoes });
 
     // atualiza estoque em memoria
     itensVenda.forEach((it) => {
@@ -420,6 +429,8 @@ function recibo(v) {
     <div>Venda #${v.numero} &mdash; ${new Date().toLocaleString("pt-BR")}</div>
     <div>Vendedor: ${escapeHtml(perfil.nome || "")}</div>
     ${v.cliente ? `<div>Cliente: ${escapeHtml(v.cliente)}</div>` : ""}
+    ${v.clienteContato ? `<div>Contato: ${escapeHtml(v.clienteContato)}</div>` : ""}
+    ${v.observacoes ? `<div>Obs: ${escapeHtml(v.observacoes)}</div>` : ""}
     <hr>
     <table style="width:100%;border-collapse:collapse">
       ${v.itens

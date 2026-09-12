@@ -9,13 +9,19 @@ rules_version = '2';
 //  Deploy sempre a partir deste repo:
 //      firebase deploy --only firestore:rules,firestore:indexes
 //
-//  HISTORICO: em 2026-09-10 um deploy feito a partir do repo do SITE
-//  publicou uma versao SEM a secao do sistema interno -> todas as colecoes
-//  `contadores/caixa/vendas/comissoes/indicadores` cairam no bloqueio padrao
-//  (permission-denied em painel/pdv/caixa/vendas/comissoes/indicadores).
-//  Esta versao re-mescla a secao do sistema sobre a base ATUAL do site
-//  (metodo de pagamento `mercadopago`, `atacadoLigado()`, cancelamento pelo
-//  dono do pedido). NAO publicar rules a partir de ~/Documentos/Amira.
+//  HISTORICO: em 2026-09-10 e de novo em 2026-09-12 um deploy feito a partir
+//  do repo do SITE (~/Documentos/Amira) publicou uma versao SEM a secao do
+//  sistema interno -> `contadores/caixa/vendas/comissoes/indicadores` e o
+//  acesso de VENDEDOR a `pedidos`/`usuarios` cairam no bloqueio padrao
+//  (paginas do sistema interno carregavam mas ficavam vazias/permission-
+//  denied pra quem loga como vendedor). Cada vez que o site evolui as
+//  proprias regras, alguem precisa reaplicar as mudancas AQUI, na secao do
+//  sistema interno, antes de publicar — nunca publicar direto do repo do
+//  site sem antes conferir contra este arquivo. Esta versao re-mescla a
+//  secao do sistema sobre a base ATUAL do site (metodo de pagamento
+//  `mercadopago`, `atacadoLigado()`, cancelamento pelo dono do pedido,
+//  `pedidos.observacoes`, `avaliacoes`, validacao mais estrita de
+//  `carrinhos` e `usuarios/dados`).
 // =============================================================================
 
 service cloud.firestore {
@@ -97,6 +103,14 @@ service cloud.firestore {
     // cota) ou de forjar dados que o painel admin exibe (ex.: selo MEI).
     // O tamanho das strings livres também é limitado.
     //
+    // "ativo"/"comissao" sao campos do SISTEMA INTERNO — entram na
+    // allowlist porque o documento e o mesmo: sem eles, um vendedor que
+    // tambem e cliente nao conseguia salvar o proprio perfil na loja (o
+    // hasOnly() reprovava so por ter esses campos ja gravados no doc,
+    // mesmo sem o dono estar mexendo neles). Quem PODE mudar o VALOR deles
+    // e so o admin — o update do dono trava isso abaixo (compara valor
+    // antigo == novo).
+    //
     // O SISTEMA interno cria contas de equipe (role "vendedor"/"admin")
     // pela instância primária já logada como admin — coberto pelo branch
     // `allow create: if ehAdmin()`.
@@ -104,7 +118,8 @@ service cloud.firestore {
       return ['nome', 'email', 'role', 'tipoConta', 'telefone', 'dataNascimento',
         'fotoURL', 'aceiteTermos', 'aceiteMarketing', 'consentimentoEm',
         'consentimentoVersao', 'criadoEm', 'atualizadoEm',
-        'cnpj', 'razaoSocial', 'provavelMEI', 'porteEmpresa', 'statusRevendedor'];
+        'cnpj', 'razaoSocial', 'provavelMEI', 'porteEmpresa', 'statusRevendedor',
+        'ativo', 'comissao'];
     }
     function stringsUsuarioNoLimite(d) {
       return (!('nome' in d) || (d.nome is string && d.nome.size() <= 120)) &&
@@ -143,10 +158,14 @@ service cloud.firestore {
         request.resource.data.role in ['vendedor', 'admin'];
 
       // Cliente do site edita o próprio perfil (allowlist, não mexe em role
-      // nem se auto-aprova como revendedor).
+      // nem se auto-aprova como revendedor). "ativo"/"comissao" (sistema
+      // interno) so podem ser CARREGADOS, nunca mudados por aqui — senao um
+      // vendedor se reativaria sozinho ou inventaria a propria comissao.
       allow update: if ehDono(uid) &&
         request.resource.data.keys().hasOnly(chavesUsuarioPermitidas()) &&
         request.resource.data.role == resource.data.role &&
+        request.resource.data.get('ativo', true) == resource.data.get('ativo', true) &&
+        request.resource.data.get('comissao', {}) == resource.data.get('comissao', {}) &&
         request.resource.data.get("aceiteTermos", true) == true &&
         stringsUsuarioNoLimite(request.resource.data) &&
         (
@@ -169,8 +188,29 @@ service cloud.firestore {
     // ── usuarios/{uid}/dados/{docId} ──────────────────────────────────────
     // Subcoleção com dados extras do perfil (ex: endereço salvo). Mesma
     // regra de dono do documento pai: só o próprio usuário ou admin acessam.
+    // ALLOWLIST: sem ela, "write: if ehDono(uid)" deixava qualquer pessoa
+    // logada encher a própria subcoleção com documentos de 1 MB — não é
+    // roubo de dado, é abuso de cota (a conta é da loja). Campo novo aqui
+    // exige atualizar esta lista.
+    function chavesEnderecoPermitidas() {
+      return ['cep', 'endereco', 'bairro', 'cidadeUf', 'complemento', 'atualizadoEm'];
+    }
     match /usuarios/{uid}/dados/{docId} {
-      allow read, write: if ehDono(uid) || ehAdmin();
+      allow read: if ehDono(uid) || ehAdmin();
+      allow write: if ehAdmin() ||
+        (ehDono(uid) &&
+          request.resource.data.keys().hasOnly(chavesEnderecoPermitidas()) &&
+          (!('cep' in request.resource.data) ||
+            (request.resource.data.cep is string && request.resource.data.cep.size() <= 12)) &&
+          (!('endereco' in request.resource.data) ||
+            (request.resource.data.endereco is string && request.resource.data.endereco.size() <= 300)) &&
+          (!('bairro' in request.resource.data) ||
+            (request.resource.data.bairro is string && request.resource.data.bairro.size() <= 120)) &&
+          (!('cidadeUf' in request.resource.data) ||
+            (request.resource.data.cidadeUf is string && request.resource.data.cidadeUf.size() <= 120)) &&
+          (!('complemento' in request.resource.data) ||
+            (request.resource.data.complemento is string && request.resource.data.complemento.size() <= 200)));
+      allow delete: if ehDono(uid) || ehAdmin();
     }
 
     // ── produtos/{produtoId} ─────────────────────────────────────────────
@@ -230,8 +270,18 @@ service cloud.firestore {
     // do carrinho NÃO é fonte de verdade de preço — no checkout, o total é
     // recalculado no cliente a partir da coleção "produtos" (que só o
     // admin escreve) e o pedido gravado não carrega valor monetário.
+    // Mesma preocupação de cota da subcoleção "dados": o documento só
+    // pode ter a chave "itens", e "itens" é uma lista curta. O SHAPE de
+    // cada item não é validável em rules (sem loops) — mesma limitação
+    // conhecida de pedidos.itens —, mas o carrinho não é fonte de verdade
+    // de preço: o checkout recalcula tudo a partir de "produtos".
     match /carrinhos/{uid} {
-      allow read, write: if ehDono(uid);
+      allow read: if ehDono(uid);
+      allow write: if ehDono(uid) &&
+        request.resource.data.keys().hasOnly(['itens']) &&
+        request.resource.data.itens is list &&
+        request.resource.data.itens.size() <= 50;
+      allow delete: if ehDono(uid);
     }
 
     // ── pedidos/{pedidoId} ───────────────────────────────────────────────
@@ -247,14 +297,20 @@ service cloud.firestore {
     // de cobrar; no PIX manual, a conferência humana barra adulteração.
     //
     // `ref`/`refEm` (opcionais) = código do indicador do link ?ref= do
-    // site, para a apuração de comissão de indicação (feita depois
-    // derivando totais de `produtos`).
+    // site, capturado no navegador do cliente ate a compra, para a
+    // apuração de comissão de indicação (feita depois derivando totais de
+    // `produtos`). Tamanho <=24 porque indicadores.js trunca o codigo
+    // nesse tamanho antes de gerar o link.
+    //
+    // `observacoes` (opcional) = nota livre do cliente pra loja. String
+    // curta como as demais — o texto em si não é validado além do
+    // tamanho, é lido por humano (o admin), não interpretado por código.
     match /pedidos/{pedidoId} {
       allow read: if estaLogado() &&
         (resource.data.uidComprador == request.auth.uid || ehAdmin() || ehVendedor());
       allow create: if estaLogado() &&
         emailVerificado() &&
-        request.resource.data.keys().hasOnly(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm', 'ref', 'refEm']) &&
+        request.resource.data.keys().hasOnly(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm', 'ref', 'refEm', 'observacoes']) &&
         request.resource.data.keys().hasAll(['uidComprador', 'itens', 'temItemAtacado', 'modoEntrega', 'endereco', 'status', 'pagamento', 'criadoEm']) &&
         request.resource.data.uidComprador == request.auth.uid &&
         request.resource.data.itens is list &&
@@ -291,12 +347,17 @@ service cloud.firestore {
         request.resource.data.pagamento.metodo in ['pix_whatsapp', 'mercadopago'] &&
         request.resource.data.pagamento.status == 'pendente' &&
         request.resource.data.criadoEm == request.time &&
-        (!('ref' in request.resource.data) ||
+        // ref/refEm só existem JUNTOS: refEm prova que foi gravado agora,
+        // no mesmo create — não um valor antigo reusado.
+        ((!('ref' in request.resource.data) && !('refEm' in request.resource.data)) ||
           (request.resource.data.ref is string &&
-           request.resource.data.ref.size() >= 1 &&
-           request.resource.data.ref.size() <= 40)) &&
-        (!('refEm' in request.resource.data) ||
-          request.resource.data.refEm == request.time);
+            request.resource.data.ref.size() >= 1 &&
+            request.resource.data.ref.size() <= 24 &&
+            request.resource.data.refEm == request.time)) &&
+        (!('observacoes' in request.resource.data) ||
+          (request.resource.data.observacoes is string &&
+            request.resource.data.observacoes.size() >= 1 &&
+            request.resource.data.observacoes.size() <= 500));
 
       // O admin escreve o que precisar. O VENDEDOR (painel interno, tela
       // Pedidos) só pode mexer no status e nos campos de controle de estoque
@@ -305,7 +366,7 @@ service cloud.firestore {
       // (entregue -> cancelado): isso vira estorno de uma venda ja espelhada
       // em `vendas` (canal 'site'), e so admin desfaz venda concluida — mesmo
       // criterio ja usado em `vendas`. O DONO só pode fazer uma coisa:
-      // CANCELAR um pedido que ele mesmo abriu e nunca pagou. A regra e
+      // CANCELAR um pedido que ele mesmo abriu e nunca pagou. A regra é
       // deliberadamente estreita — só a chave "status" pode mudar, só para
       // 'cancelado', só saindo de 'aguardando_pagamento' e só enquanto o
       // provedor não aprovou. Depois de pago vira caso de estorno, não de
@@ -349,9 +410,67 @@ service cloud.firestore {
       allow update, delete: if ehAdmin();
     }
 
+    // ── avaliacoes/{docId} ───────────────────────────────────────────────
+    // Avaliação de produto por quem comprou.
+    //
+    // ⚠️ O QUE ESTA REGRA CONSEGUE E O QUE NÃO CONSEGUE GARANTIR:
+    // ela confere que quem escreve é dono de um pedido PAGO — o cliente
+    // manda o pedidoId e o get() abaixo checa. O que ela NÃO consegue é
+    // conferir que aquele pedido contém ESTE produto: rules não fazem
+    // laço sobre "itens" (mesma limitação já documentada em pedidos).
+    //
+    // Quem fecha essa brecha é a MODERAÇÃO: a avaliação nasce com
+    // aprovada = false e só o admin publica. A loja lê apenas as
+    // aprovadas. Sem isso, alguém com um pedido pago poderia avaliar
+    // qualquer produto do catálogo.
+    //
+    // A checagem "o pedido contém este produto" existe, mas no cliente
+    // (js/produto-detalhe.js) — ela é de INTERFACE, para não oferecer o
+    // formulário a quem não pode usar. Não é o controle de segurança.
+    function chavesAvaliacaoPermitidas() {
+      return ['produtoId', 'pedidoId', 'uidAutor', 'nomeAutor', 'nota', 'texto',
+        'aprovada', 'criadoEm'];
+    }
+    match /avaliacoes/{docId} {
+      // Público vê só o que o admin publicou. O autor vê a própria,
+      // mesmo pendente, para saber que foi enviada.
+      allow read: if ehAdmin() ||
+        resource.data.aprovada == true ||
+        (estaLogado() && resource.data.uidAutor == request.auth.uid);
+
+      allow create: if estaLogado() &&
+        emailVerificado() &&
+        request.resource.data.keys().hasOnly(chavesAvaliacaoPermitidas()) &&
+        request.resource.data.keys().hasAll(['produtoId', 'pedidoId', 'uidAutor',
+          'nomeAutor', 'nota', 'texto', 'aprovada', 'criadoEm']) &&
+        request.resource.data.uidAutor == request.auth.uid &&
+        // nasce SEMPRE pendente — publicar é ato do admin
+        request.resource.data.aprovada == false &&
+        request.resource.data.nota is int &&
+        request.resource.data.nota >= 1 &&
+        request.resource.data.nota <= 5 &&
+        request.resource.data.texto is string &&
+        request.resource.data.texto.size() <= 600 &&
+        request.resource.data.nomeAutor is string &&
+        request.resource.data.nomeAutor.size() <= 120 &&
+        request.resource.data.produtoId is string &&
+        request.resource.data.produtoId.size() <= 60 &&
+        request.resource.data.criadoEm == request.time &&
+        // o pedido citado existe, é de quem está escrevendo, e foi pago
+        exists(/databases/$(database)/documents/pedidos/$(request.resource.data.pedidoId)) &&
+        get(/databases/$(database)/documents/pedidos/$(request.resource.data.pedidoId)).data.uidComprador == request.auth.uid &&
+        get(/databases/$(database)/documents/pedidos/$(request.resource.data.pedidoId)).data.status == 'pago';
+
+      // Só o admin publica, despublica ou apaga. O autor não edita depois
+      // de enviar: senão daria para trocar o texto DEPOIS de aprovado.
+      allow update, delete: if ehAdmin();
+    }
+
     // =========================================================================
     //  SISTEMA INTERNO (PDV / caixa / comissoes / indicadores)
-    //  Colecoes usadas SO pelo app interno (~/Downloads/sistema amira).
+    //  Colecoes usadas SO pelo app interno (sistema-amira). A loja NAO toca
+    //  nestas — ver comentario em cada bloco. NUNCA remover esta secao num
+    //  deploy feito a partir do repo do site: ver aviso no topo do arquivo.
     // =========================================================================
 
     // ── contadores/{doc} ────────────────────────────────────────────────
@@ -426,6 +545,10 @@ service cloud.firestore {
     }
 
     // ── Bloqueio padrão ──────────────────────────────────────────────────
+    // Cobre também "limites", o contador de requisições das funções
+    // serverless (api/_lib/limite.js): o Admin SDK ignora estas regras, e
+    // do cliente a coleção precisa ficar fechada — senão dava para zerar
+    // o próprio contador.
     // Qualquer coleção não listada acima fica negada por padrão.
     match /{document=**} {
       allow read, write: if false;

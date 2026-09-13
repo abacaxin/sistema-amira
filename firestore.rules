@@ -22,6 +22,15 @@ rules_version = '2';
 //  `mercadopago`, `atacadoLigado()`, cancelamento pelo dono do pedido,
 //  `pedidos.observacoes`, `avaliacoes`, validacao mais estrita de
 //  `carrinhos` e `usuarios/dados`).
+//
+//  2026-09-13: reconciliado de novo — uma copia trazida do repo do site
+//  ainda tinha o campo antigo `estoqueVarejo`/`estoqueAtacado` em
+//  `produtos` (revertido aqui, o correto e o pool unico `estoque` — ver
+//  PR de unificacao de estoque) mas trouxe uma coisa nova e legitima que
+//  faltava aqui: `avaliacoesLoja/{docId}` (avaliacao da LOJA via QR code
+//  do balcao fisico, sem login — ver admin/avaliacoes-loja.html). Ao
+//  reconciliar uma copia trazida de la, sempre comparar campo por campo
+//  com o que ja existe aqui antes de aceitar — nao é só "pegar tudo".
 // =============================================================================
 
 service cloud.firestore {
@@ -465,6 +474,46 @@ service cloud.firestore {
 
       // Só o admin publica, despublica ou apaga. O autor não edita depois
       // de enviar: senão daria para trocar o texto DEPOIS de aprovado.
+      allow update, delete: if ehAdmin();
+    }
+
+    // ── avaliacoesLoja/{docId} ────────────────────────────────────────────
+    // Avaliação da LOJA (não de um produto) — pensada pro QR code no balcão
+    // físico: QUALQUER pessoa avalia, sem estar logada e sem ter comprado
+    // nada. Por isso não tem como amarrar num pedido pago, como faz
+    // avaliacoes/{docId} logo acima. A única trava de verdade aqui é a
+    // MODERAÇÃO: nasce aprovada = false, e só aparece publicamente depois
+    // que o admin publica (ver admin/avaliacoes-loja.html). Sem isso,
+    // qualquer um poderia colocar qualquer texto direto na home da loja.
+    function chavesAvaliacaoLojaPermitidas() {
+      return ['nome', 'nota', 'texto', 'aprovada', 'criadoEm', 'uidAutor'];
+    }
+    match /avaliacoesLoja/{docId} {
+      allow read: if ehAdmin() || resource.data.aprovada == true;
+
+      allow create: if
+        request.resource.data.keys().hasOnly(chavesAvaliacaoLojaPermitidas()) &&
+        request.resource.data.keys().hasAll(['nome', 'nota', 'texto', 'aprovada', 'criadoEm']) &&
+        // nasce SEMPRE pendente — publicar é ato do admin
+        request.resource.data.aprovada == false &&
+        request.resource.data.nota is int &&
+        request.resource.data.nota >= 1 &&
+        request.resource.data.nota <= 5 &&
+        request.resource.data.nome is string &&
+        request.resource.data.nome.size() >= 1 &&
+        request.resource.data.nome.size() <= 120 &&
+        request.resource.data.texto is string &&
+        request.resource.data.texto.size() <= 600 &&
+        request.resource.data.criadoEm == request.time &&
+        // uidAutor é OPCIONAL: só existe se a pessoa já estava logada ao
+        // enviar, e nesse caso tem que ser o próprio uid — nunca em nome
+        // de outra pessoa (mesmo padrão ausente-quando-vazio de ref/refEm
+        // em pedidos e de observacoes).
+        (!('uidAutor' in request.resource.data) ||
+          (estaLogado() && request.resource.data.uidAutor == request.auth.uid));
+
+      // Só o admin publica, despublica ou apaga — mesma régua de
+      // avaliacoes/{docId}.
       allow update, delete: if ehAdmin();
     }
 

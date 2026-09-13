@@ -60,9 +60,10 @@ const produtos = (await getDocs(collection(db, "produtos"))).docs
   .filter((p) => p.ativo !== false)
   .sort((a, b) => (a.nome || "").localeCompare(b.nome || "", "pt-BR"));
 
-// preco de venda (varejo, com desconto do site aplicado) e estoque de varejo
+// preco de venda (varejo, com desconto do site aplicado); estoque e um so
+// pool (nao ha mais divisao varejo/atacado)
 const precoDe = (p) => infoPreco(p, "varejo").precoFinal;
-const estoqueDe = (p) => estoquePorModo(p, "varejo");
+const estoqueDe = (p) => estoquePorModo(p);
 
 let carrinho = [];
 let pagamentos = [];
@@ -371,17 +372,17 @@ async function finalizar() {
         const ref = doc(db, "produtos", it.produtoId);
         const s = await t.get(ref);
         if (!s.exists()) throw new Error(`Produto ${it.nome} nao encontrado.`);
-        const est = s.data().estoqueVarejo ?? s.data().estoque ?? 0;
+        const est = s.data().estoque ?? 0;
         if (est < it.qtd) throw new Error(`Estoque insuficiente de ${it.nome} (disponivel: ${est}).`);
         estoques.push({ ref, novo: est - it.qtd });
       }
 
       t.set(contRef, { ultimo_numero: prox }, { merge: true });
-      // Regra do site: um vendedor so pode alterar `estoqueVarejo`/
-      // `estoqueAtacado`/`atualizadoEm` em produtos — nada mais nesse update.
+      // Regra do site: um vendedor so pode alterar `estoque`/`atualizadoEm`
+      // em produtos — nada mais nesse update.
       estoques.forEach((e) =>
         t.update(e.ref, {
-          estoqueVarejo: e.novo,
+          estoque: e.novo,
           atualizadoEm: serverTimestamp(),
         })
       );
@@ -413,7 +414,7 @@ async function finalizar() {
     // atualiza estoque em memoria
     itensVenda.forEach((it) => {
       const p = produtos.find((x) => x.id === it.produtoId);
-      if (p) p.estoqueVarejo = estoqueDe(p) - it.qtd;
+      if (p) p.estoque = estoqueDe(p) - it.qtd;
     });
     limpar();
   } catch (e) {

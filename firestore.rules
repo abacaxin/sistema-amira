@@ -216,15 +216,17 @@ service cloud.firestore {
     // ── produtos/{produtoId} ─────────────────────────────────────────────
     // Qualquer pessoa (logada ou não) pode VER o catálogo.
     // Só admin cria/edita/remove — MENOS a baixa de estoque no PDV: um
-    // vendedor ativo pode alterar SOMENTE os campos de estoque (a venda em
-    // si vai para a coleção `vendas`).
+    // vendedor ativo pode alterar SOMENTE o campo de estoque (a venda em
+    // si vai para a coleção `vendas`). Estoque e um so pool compartilhado
+    // entre varejo e atacado (nao ha mais estoqueVarejo/estoqueAtacado
+    // separados) — so o preco continua tendo dois valores.
     match /produtos/{produtoId} {
       allow read: if true;
       allow create, delete: if ehAdmin();
       allow update: if ehAdmin()
         || (ehVendedor()
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['estoqueVarejo', 'estoqueAtacado', 'atualizadoEm']));
+                 .hasOnly(['estoque', 'atualizadoEm']));
     }
 
     // ── camadas/{camadaId} ──────────────────────────────────────────────

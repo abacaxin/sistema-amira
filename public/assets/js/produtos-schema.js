@@ -1,8 +1,14 @@
 // ── Schema de produto do SITE (flora-5754a) — helpers ────────────────────
 // O sistema interno le/escreve a MESMA colecao `produtos` do site. Estes
-// helpers sao a porta unica pros campos do site (precoVarejo, estoqueVarejo,
+// helpers sao a porta unica pros campos do site (precoVarejo, estoque,
 // filtros{}, desconto...), portados de frontend/src/pages/services/produtos.js
 // e services/iphones.js do repo do site. Mantido pequeno de proposito.
+//
+// O PRECO ainda tem dois modos (varejo/atacado, campos precoVarejo/
+// precoAtacado) — cada um com seu proprio valor. O ESTOQUE, porem, e um so
+// (campo `estoque`, compartilhado com o site): nao ha mais separacao de
+// estoque entre varejo e atacado (existiu por um tempo como estoqueVarejo/
+// estoqueAtacado, hoje descontinuado).
 
 /**
  * Preco de exibicao/venda, aplicando o desconto configurado pelo admin
@@ -23,10 +29,12 @@ export function infoPreco(produto, modo = "varejo") {
   return { precoFinal: base, precoOriginal: base, temDesconto: false, percentual: 0 };
 }
 
-/** Estoque na modalidade. Produtos antigos (so `estoque`) valem como varejo. */
-export function estoquePorModo(produto, modo = "varejo") {
-  if (modo === "atacado") return Number(produto.estoqueAtacado) || 0;
-  if (typeof produto.estoqueVarejo === "number") return produto.estoqueVarejo;
+/**
+ * Estoque do produto. Um so pool pra varejo e atacado (nao ha mais
+ * `estoqueVarejo`/`estoqueAtacado` separados) — o parametro `modo` fica so
+ * por compatibilidade de chamada, nao muda o resultado.
+ */
+export function estoquePorModo(produto) {
   return Number(produto.estoque) || 0;
 }
 

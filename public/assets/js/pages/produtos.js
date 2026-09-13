@@ -10,8 +10,9 @@ import { listarCamadas, camadaPrincipal } from "../camadas.js";
 
 // Editor completo — grava na MESMA colecao `produtos` do site, no mesmo
 // formato do admin do site (frontend/src/pages/admin/js/admin-produtos.js):
-// precoVarejo/precoAtacado, estoqueVarejo/estoqueAtacado, filtros{} por camada,
-// categoria (legado = 1a opcao da camada principal), desconto opcional.
+// precoVarejo/precoAtacado (dois valores), estoque (um so, compartilhado
+// entre varejo e atacado), filtros{} por camada, categoria (legado = 1a
+// opcao da camada principal), desconto opcional.
 // Foto: upload de arquivo -> data URI comprimida (mesmo esquema do admin do
 // site; sem Firebase Storage). Produtos legados com imagemURL http continuam
 // funcionando ate a foto ser trocada.
@@ -89,7 +90,7 @@ function renderTabela() {
       <thead><tr>
         <th><input type="checkbox" id="chk-all" style="width:auto"></th>
         <th>Nome</th><th>Cod. barras</th><th>${escapeHtml(camadaPrincipal(camadas)?.nome || "Filtro")}</th>
-        <th class="right">Varejo</th><th class="right">Est. varejo</th><th class="right">Est. atac.</th>
+        <th class="right">Varejo</th><th class="right">Estoque</th>
         <th>Ativo</th><th></th>
       </tr></thead>
       <tbody>
@@ -102,13 +103,12 @@ function renderTabela() {
                 <td>${escapeHtml(p.codigoBarras || "")}</td>
                 <td>${escapeHtml(rotuloPrincipal(p))}</td>
                 <td class="right">${brl(infoPreco(p, "varejo").precoFinal)}</td>
-                <td class="right">${estoquePorModo(p, "varejo")}</td>
-                <td class="right">${estoquePorModo(p, "atacado")}</td>
+                <td class="right">${estoquePorModo(p)}</td>
                 <td><span class="tag ${p.ativo === false ? "inativo" : "ativo"}">${p.ativo === false ? "inativo" : "ativo"}</span></td>
                 <td class="right"><button class="btn ghost editar" data-id="${p.id}">Editar</button></td>
               </tr>`
             )
-            .join("") || `<tr><td colspan="9" class="muted">Nenhum produto.</td></tr>`
+            .join("") || `<tr><td colspan="8" class="muted">Nenhum produto.</td></tr>`
         }
       </tbody>
     </table></div>`;
@@ -222,8 +222,7 @@ function editar(p) {
       <div><label>Peso (g)</label><input id="f-peso" type="number" value="${p?.peso ?? 0}"></div>
     </div>
     <div class="row">
-      <div><label>Estoque varejo</label><input id="f-ev" type="number" value="${p ? estoquePorModo(p, "varejo") : 0}"></div>
-      <div><label>Estoque atacado</label><input id="f-ea" type="number" value="${p ? estoquePorModo(p, "atacado") : 0}"></div>
+      <div><label>Estoque</label><input id="f-est" type="number" value="${p ? estoquePorModo(p) : 0}"></div>
     </div>
     <label>Camadas de filtro</label>
     ${camadasHtml}
@@ -284,7 +283,6 @@ function editar(p) {
       const descontoPercentual = parseNum(c.querySelector("#f-desc-pct").value);
       const precoVarejo = parseNum(c.querySelector("#f-pv").value);
       const precoAtacado = parseNum(c.querySelector("#f-pa").value);
-      const estoqueAtacado = Math.trunc(parseNum(c.querySelector("#f-ea").value));
 
       // Se as camadas nao carregaram, um produto existente NAO tem a
       // classificacao mexida (evita zerar filtros/categoria no site num save
@@ -302,9 +300,7 @@ function editar(p) {
         peso: Math.trunc(parseNum(c.querySelector("#f-peso").value)),
         precoVarejo,
         precoAtacado: precoAtacado > 0 ? precoAtacado : null,
-        estoqueVarejo: Math.trunc(parseNum(c.querySelector("#f-ev").value)),
-        estoqueAtacado,
-        estoque: null,
+        estoque: Math.trunc(parseNum(c.querySelector("#f-est").value)),
         descontoAtivo,
         descontoTipo: descontoAtivo ? "percentual" : null,
         descontoPercentual: descontoAtivo ? descontoPercentual : null,
@@ -325,9 +321,6 @@ function editar(p) {
       }
       if ((dados.precoVarejo || 0) <= 0 && (dados.precoAtacado || 0) <= 0) {
         toast("Configure pelo menos preco de varejo e/ou de atacado.", "err"); return false;
-      }
-      if ((dados.precoAtacado || 0) > 0 && estoqueAtacado <= 0) {
-        toast("Preco de atacado exige estoque de atacado (ou zere o preco de atacado).", "err"); return false;
       }
       if (descontoAtivo && (descontoPercentual < 1 || descontoPercentual > 90)) {
         toast("Desconto deve ser um percentual entre 1 e 90.", "err"); return false;

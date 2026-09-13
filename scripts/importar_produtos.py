@@ -97,9 +97,9 @@ def main():
             "filtros": {camada: [categoria]} if (camada and categoria) else {},
             "precoVarejo": num(row.get("preco_varejo")),
             "precoAtacado": preco_atacado if preco_atacado > 0 else None,
-            "estoqueVarejo": int(num(row.get("estoque_varejo"))),
-            "estoqueAtacado": int(num(row.get("estoque_atacado"))),
-            "estoque": None,
+            # Estoque e um so pool, compartilhado entre varejo e atacado
+            # (nao ha mais estoqueVarejo/estoqueAtacado separados).
+            "estoque": int(num(row.get("estoque"))),
             "peso": int(num(row.get("peso"))),
             "ativo": sim_nao(row.get("ativo")),
             "atualizadoEm": firestore.SERVER_TIMESTAMP,

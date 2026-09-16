@@ -1,9 +1,11 @@
 import { requireAuth } from "../auth.js";
 import { initShell, toast, escapeHtml } from "../ui.js";
-import { db, doc, getDoc, setDoc, serverTimestamp } from "../db.js";
+import { db, doc, getDoc, setDoc, updateDoc, serverTimestamp } from "../db.js";
 import { parseNum } from "../money.js";
+import { FORMAS_JUROS, parseTabelaJuros, formatarTabelaJuros } from "../juros.js";
 
 const BASES = ["total", "total_sem_desconto", "margem"];
+const FORMA_LABEL = { credito: "Crédito", crediario: "Crediário", debito: "Débito" };
 
 const { perfil } = await requireAuth({ roles: ["admin"] });
 const root = initShell({ perfil, active: "config" });
@@ -15,10 +17,6 @@ const [snapSis, snapInd] = await Promise.all([
 const cfg = snapSis.exists() ? snapSis.data() : {};
 const com = cfg.comissao || {};
 const parc = cfg.parcelamento || {};
-const jurosTxt = Object.entries(parc.juros || {})
-  .sort((a, b) => Number(a[0]) - Number(b[0]))
-  .map(([n, p]) => `${n}:${p}`)
-  .join(", ");
 const ind = snapInd.exists() ? snapInd.data() : {};
 
 root.innerHTML = `
@@ -48,15 +46,18 @@ root.innerHTML = `
   </div>
 
   <div class="card">
-    <strong>Parcelamento do PDV (credito / crediario)</strong>
-    <p class="muted">Ao escolher "credito" ou "crediario" no pagamento do PDV, o vendedor pode parcelar. Aqui voce define ate quantas vezes, o valor minimo de cada parcela e os juros de cada quantidade de parcelas.</p>
+    <strong>Parcelamento e juros do PDV</strong>
+    <p class="muted">Ao escolher "credito" ou "crediario" no pagamento do PDV, o vendedor pode parcelar (debito nunca parcela). Aqui voce define ate quantas vezes, o valor minimo de cada parcela, e os juros de cada forma.</p>
     <div class="row">
       <div><label>Maximo de parcelas</label><input id="parc-max" value="${parc.maximo ?? 12}"></div>
       <div><label>Valor minimo por parcela (R$)</label><input id="parc-min" value="${parc.minimo_parcela ?? 0}"></div>
     </div>
-    <label>Juros por quantidade de parcelas (formato: parcelas:percentual, separado por virgula)</label>
-    <input id="parc-juros" value="${escapeHtml(jurosTxt)}" placeholder="ex.: 2:0, 3:2.5, 4:4, 6:8">
-    <p class="muted">Quantidade nao listada acima = 0% de juros. Ex.: "3:2.5" = parcelar em 3x cobra 2,5% de juros sobre o valor.</p>
+    <p class="muted">Cada entrada e <code>parcelas:jurosCliente|custoLoja</code>, separadas por virgula. <code>jurosCliente</code> e somado ao valor que o cliente paga nessa forma; <code>custoLoja</code> e o custo da loja (ex.: taxa da maquininha) sobre o valor original — os dois sao independentes, nao precisam ser iguais, e o <code>|custoLoja</code> e opcional (fica 0 se omitido). Quantidade nao listada = sem juros nem custo. Debito nunca parcela — use so a entrada <code>1:...</code> pra registrar a taxa do debito a vista.</p>
+    ${FORMAS_JUROS.map(
+      (forma) => `
+      <label>Juros no ${FORMA_LABEL[forma]}</label>
+      <input id="juros-${forma}" value="${escapeHtml(formatarTabelaJuros(parc.juros?.[forma]))}" placeholder="${forma === "debito" ? "ex.: 1:0|1.5" : "ex.: 1:0|3, 3:5|2, 6:12|4"}">`
+    ).join("")}
     <button class="btn" id="salvar-parc" style="margin-top:8px">Salvar parcelamento</button>
   </div>
 
@@ -96,30 +97,37 @@ document.getElementById("salvar").onclick = async () => {
 };
 
 document.getElementById("salvar-parc").onclick = async () => {
-  const juros = {};
-  document
-    .getElementById("parc-juros")
-    .value.split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .forEach((par) => {
-      const [n, p] = par.split(":").map((s) => s.trim());
-      const parcelas = Math.trunc(parseNum(n));
-      if (parcelas > 1) juros[String(parcelas)] = parseNum(p);
-    });
+  // updateDoc com caminhos pontilhados (nao setDoc({merge:true})): merge do
+  // Firestore em mapa aninhado e RECURSIVO — ele so sobrescreveria as chaves
+  // novas, e uma parcela apagada do texto continuaria existindo no banco.
+  // Caminho pontilhado substitui o mapa daquela forma por inteiro.
+  const dados = {
+    "parcelamento.maximo": Math.max(1, Math.trunc(parseNum(document.getElementById("parc-max").value)) || 12),
+    "parcelamento.minimo_parcela": Math.max(0, parseNum(document.getElementById("parc-min").value)),
+    atualizadoEm: serverTimestamp(),
+  };
+  for (const forma of FORMAS_JUROS) {
+    dados[`parcelamento.juros.${forma}`] = parseTabelaJuros(document.getElementById(`juros-${forma}`).value);
+  }
 
-  await setDoc(
-    doc(db, "configuracoes", "sistema"),
-    {
-      parcelamento: {
-        maximo: Math.max(1, Math.trunc(parseNum(document.getElementById("parc-max").value)) || 12),
-        minimo_parcela: Math.max(0, parseNum(document.getElementById("parc-min").value)),
-        juros,
+  try {
+    await updateDoc(doc(db, "configuracoes", "sistema"), dados);
+  } catch (_) {
+    // Doc "sistema" pode nao existir ainda (primeira configuracao) —
+    // updateDoc falha em doc inexistente; cria com setDoc nesse caso.
+    await setDoc(
+      doc(db, "configuracoes", "sistema"),
+      {
+        parcelamento: {
+          maximo: dados["parcelamento.maximo"],
+          minimo_parcela: dados["parcelamento.minimo_parcela"],
+          juros: Object.fromEntries(FORMAS_JUROS.map((f) => [f, dados[`parcelamento.juros.${f}`]])),
+        },
+        atualizadoEm: serverTimestamp(),
       },
-      atualizadoEm: serverTimestamp(),
-    },
-    { merge: true }
-  );
+      { merge: true }
+    );
+  }
   toast("Parcelamento salvo.", "ok");
 };
 

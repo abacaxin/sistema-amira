@@ -12,12 +12,15 @@ export const CONFIG_SISTEMA_PADRAO = {
   cnpj: "",
   formas_pagamento: ["dinheiro", "pix", "debito", "credito", "crediario"],
   comissao: { base: "total", percentual_padrao: 0 },
-  // Parcelamento do PDV (credito/crediario): `maximo` = numero maximo de
-  // parcelas oferecido; `minimo_parcela` = valor minimo (R$) que cada
-  // parcela pode ter (limita quantas parcelas cabem numa venda pequena);
-  // `juros` = percentual de juros por quantidade de parcelas, ex.:
-  // { "3": 2.5 } = 3x tem 2,5% de juros sobre o valor. Chave ausente = 0%.
-  parcelamento: { maximo: 12, minimo_parcela: 0, juros: {} },
+  // Parcelamento do PDV (credito/crediario parcelam; debito nao, mas pode
+  // ter taxa em "1"): `maximo` = numero maximo de parcelas oferecido;
+  // `minimo_parcela` = valor minimo (R$) por parcela (limita quantas
+  // parcelas cabem numa venda pequena); `juros` = uma tabela POR FORMA de
+  // pagamento, cada uma { "parcelas": {cliente, loja} } — `cliente` e o %
+  // somado ao que o cliente paga, `loja` e o % de custo da loja (ex.: taxa
+  // da maquininha) sobre o valor original. Chave ausente = sem juros/custo.
+  // Ver public/assets/js/juros.js (parseTabelaJuros/infoParcela).
+  parcelamento: { maximo: 12, minimo_parcela: 0, juros: { credito: {}, crediario: {}, debito: {} } },
 };
 
 export const CONFIG_INDICADORES_PADRAO = {

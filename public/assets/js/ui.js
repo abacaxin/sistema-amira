@@ -4,6 +4,7 @@ const NAV = [
   ["dashboard", "Painel", "/dashboard"],
   ["pdv", "PDV", "/pdv"],
   ["caixa", "Caixa", "/caixa"],
+  ["gastos", "Gastos", "/gastos", true],
   ["produtos", "Produtos", "/produtos", true],
   ["vendas", "Vendas", "/vendas"],
   ["pedidos", "Pedidos", "/pedidos"],

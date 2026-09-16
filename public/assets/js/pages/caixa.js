@@ -3,8 +3,40 @@ import { initShell, toast, modal, escapeHtml, fmtData, erroCard } from "../ui.js
 import {
   db, collection, getDocs, query, where, orderBy, limit,
   doc, addDoc, updateDoc, serverTimestamp, arrayUnion, Timestamp,
+  inicioDoDia,
 } from "../db.js";
 import { brl, round2, parseNum } from "../money.js";
+
+// Gastos sao soltos por data (nao amarrados a um caixa_id) — aqui so
+// mostramos um resumo somente-leitura, pro staff ver o que ja foi lancado
+// no periodo. A gestao completa (criar/editar/excluir, so admin) fica em
+// /gastos. Com caixa aberto, o periodo e [aberto_em, agora]; sem caixa
+// aberto, mostramos so o dia de hoje.
+async function gastosDoPeriodo(inicioTs, fimTs) {
+  const snap = await getDocs(query(
+    collection(db, "gastos"),
+    where("data", ">=", inicioTs),
+    where("data", "<", fimTs),
+    orderBy("data", "desc")
+  ));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+function gastosHtml(gastos, tituloPeriodo) {
+  const total = round2(gastos.reduce((s, g) => s + (Number(g.valor) || 0), 0));
+  return `
+    <div class="card">
+      <strong>Gastos ${tituloPeriodo}</strong>
+      <div class="tabela-wrap"><table><tbody>
+        ${
+          gastos
+            .map((g) => `<tr><td>${fmtData(g.data)}</td><td>${escapeHtml(g.descricao || "-")}</td><td class="right">${brl(g.valor)}</td></tr>`)
+            .join("") || `<tr><td class="muted">Nenhum gasto lancado.</td></tr>`
+        }
+      </tbody></table></div>
+      <p class="muted" style="margin-top:8px">Total: <strong>${brl(total)}</strong> &middot; <a href="/gastos">Gerenciar gastos</a></p>
+    </div>`;
+}
 
 const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "caixa" });
@@ -42,6 +74,7 @@ async function renderBody() {
   ))).docs.map((d) => ({ id: d.id, ...d.data() }));
 
   if (!caixa) {
+    const gastosHoje = await gastosDoPeriodo(Timestamp.fromDate(inicioDoDia()), Timestamp.now());
     root.innerHTML = `
       <div class="card">
         <strong>Abrir caixa</strong>
@@ -50,6 +83,7 @@ async function renderBody() {
         <input id="abertura" value="0" inputmode="decimal">
         <button class="btn" id="btn-abrir" style="margin-top:12px">Abrir caixa</button>
       </div>
+      ${gastosHtml(gastosHoje, "de hoje")}
       ${histHtml(hist)}`;
     document.getElementById("btn-abrir").onclick = async () => {
       if (await caixaAberto()) return toast("Ja existe um caixa aberto.", "warn");
@@ -77,6 +111,8 @@ async function renderBody() {
   ))).docs
     .map((d) => d.data())
     .filter((v) => v.status === "concluida");
+
+  const gastosSessao = await gastosDoPeriodo(caixa.aberto_em, Timestamp.now());
 
   const porForma = {};
   vendas.forEach((v) =>
@@ -133,6 +169,7 @@ async function renderBody() {
       </table></div>
     </div>
 
+    ${gastosHtml(gastosSessao, "desta sessao")}
     ${histHtml(hist)}`;
 
   document.getElementById("btn-sup").onclick = () => movimento("suprimento", caixa.id);

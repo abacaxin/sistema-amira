@@ -15,7 +15,7 @@ from _firebase import init
 COLECOES = [
     "usuarios", "produtos", "camadas", "configuracoes", "carrinhos",
     "pedidos", "metricas", "indicadores",
-    "vendas", "caixa", "contadores", "comissoes",
+    "vendas", "caixa", "contadores", "comissoes", "gastos",
 ]
 
 

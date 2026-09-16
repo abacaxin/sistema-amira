@@ -36,15 +36,16 @@ Desde 2026-09 o sistema **compartilha o projeto Firebase do site** (`flora-5754a
 | Modulo | Papel | Descricao |
 |---|---|---|
 | Login / guarda de rota | — | Firebase Auth (e-mail/senha). So `admin` ou `vendedor` ativo entram; cliente do site que tentar logar e deslogado no submit com aviso. |
-| Painel (`dashboard`) | admin + vendedor | Vendas do dia, faturamento, ticket medio, comissao do mes, caixa aberto (unico pra loja toda), vendas por canal, top produtos. Vendedor ve so os proprios numeros de venda; comissao e caixa sao compartilhados. |
-| PDV (`pdv`) | admin + vendedor | **Leitor USB de codigo de barras** (bipa `codigoBarras` -> carrinho) + busca por nome. Preco via `infoPreco`, estoque via `estoquePorModo` (pool unico, sem separacao varejo/atacado). Carrinho, cliente/contato obrigatorios, desconto, formas de pagamento, baixa de `estoque`, calculo de comissao e vinculo ao caixa **unico/compartilhado** — tudo numa transacao. Recibo para impressao. |
-| Caixa (`caixa`) | admin + vendedor | Caixa **unico pra loja toda** (nao "do usuario") — so pode haver um aberto por vez, qualquer staff opera nele (abre, lanca sangria/suprimento, fecha), conferencia soma vendas de toda a equipe. Fechamento com conferencia de dinheiro e divergencia, historico compartilhado. |
+| Painel (`dashboard`) | admin + vendedor | Vendas do dia, faturamento, ticket medio, comissao do mes, caixa aberto (unico pra loja toda), vendas por canal, top produtos. Vendedor ve so os proprios numeros de venda; comissao e caixa sao compartilhados. **Admin** ve tambem "Contabilidade mensal" (receita bruta, juros, gastos, comissao de vendedores e de indicadores, valor liquido do mes — por periodo escolhido). |
+| PDV (`pdv`) | admin + vendedor | **Leitor USB de codigo de barras** (bipa `codigoBarras` -> carrinho) + busca por nome. Preco via `infoPreco`, estoque via `estoquePorModo` (pool unico, sem separacao varejo/atacado). Carrinho, cliente/contato obrigatorios, desconto, formas de pagamento com **juros reais** por parcela (cliente/loja, ver `juros.js`), baixa de `estoque`, calculo de comissao e vinculo ao caixa **unico/compartilhado** — tudo numa transacao. Recibo para impressao ja com o valor cobrado do cliente. |
+| Caixa (`caixa`) | admin + vendedor | Caixa **unico pra loja toda** (nao "do usuario") — so pode haver um aberto por vez, qualquer staff opera nele (abre, lanca sangria/suprimento, fecha), conferencia soma vendas de toda a equipe. Fechamento com conferencia de dinheiro e divergencia, historico compartilhado. Mostra os gastos lancados no periodo pra qualquer staff; **admin** ve tambem o card "Valor liquido do caixa" (vendido − custo de maquininha − gastos), sem alterar o calculo de dinheiro na gaveta. |
 | Vendas (`vendas`) | admin + vendedor | Historico com filtro por canal e por forma de pagamento. Admin pode cancelar venda (devolve `estoque` em transacao). Vendedor ve as proprias vendas de loja + o espelho de pedidos do site. |
 | Comissoes (`comissoes`) | admin + vendedor | Relatorio por vendedor/periodo (so canal `loja`), fechamento de periodo e marcacao de pago. |
+| Gastos (`gastos`) | **so admin** | CRUD de despesas soltas por data (`descricao, categoria, valor, data, observacoes`) — nao depende de caixa aberto. Leitura do resumo do periodo liberada pra qualquer staff dentro do Caixa. |
 | Produtos (`produtos`) | **so admin** | Editor completo no schema do site: `codigoBarras` (EAN) obrigatorio e unico, `filtros{}` por camada + categoria legado, precos varejo/atacado, estoques, desconto, `ativo`/`destaque`/`freteDisponivel`; fotos por URL. Acao em massa ativar/inativar. |
-| Indicadores (`indicadores`) | **so admin** | CRUD de indicadores (`nome, codigo, contato, ativo`), copia do link `?ref=`, e **apuracao por periodo**: le `pedidos` com `ref`, deriva a base elegivel do catalogo atual (`camadas` + `produtos`), exclui iPhone, aplica o percentual. Pagamento manual. |
+| Indicadores (`indicadores`) | **so admin** | CRUD de indicadores (`nome, codigo, contato, ativo, anotacoes`), copia do link `?ref=`, e **apuracao por periodo venda por venda** (sem resumo agregado — o resumo fica no "Perfil" de cada indicador): le `pedidos` com `ref`, deriva a base elegivel do catalogo atual (`camadas` + `produtos`), exclui iPhone, aplica o percentual. Pagamento manual. |
 | Usuarios (`usuarios`) | **so admin** | Cria vendedor **sem deslogar o admin** (instancia secundaria do Firebase App so para o `createUserWithEmailAndPassword`; o doc `usuarios/{uid}` e gravado pela instancia primaria). Define `%`/base de comissao, ativa/inativa. |
-| Configuracoes (`config`) | **so admin** | `configuracoes/sistema` (nome da loja, CNPJ, formas de pagamento, base + `%` padrao de comissao) e `configuracoes/indicadores` (`site_url`, `percentual`, `janela_dias`, `categorias_excluidas[]`). |
+| Configuracoes (`config`) | **so admin** | `configuracoes/sistema` (nome da loja, CNPJ, formas de pagamento, tabela de juros por forma, base + `%` padrao de comissao) e `configuracoes/indicadores` (`site_url`, `percentual`, `janela_dias`, `categorias_excluidas[]`). |
 | Backup | — | GitHub Action diaria exporta o Firestore para JSON (artefato de 30 dias). |
 
 ### Estado (2026-09)
@@ -149,6 +150,11 @@ python scripts/relatorio_indicadores.py --periodo 2026-09
 # backup manual do Firestore
 python scripts/backup_firestore.py --dir backups
 
+# backfill de custo_loja/valor_liquido em vendas ANTIGAS (antes dos juros reais)
+# por padrao so mostra relatorio; use --aplicar pra gravar de verdade
+python scripts/backfill_juros_historico.py
+python scripts/backfill_juros_historico.py --aplicar
+
 # servidor estatico local para abrir o front sem deploy
 python scripts/dev_server.py
 ```
@@ -195,18 +201,44 @@ Colecoes **do sistema**:
 
 - `usuarios/{uid}`: `nome, email, role ("admin"|"vendedor"), ativo, comissao{ base?, percentual? }`
   (o mesmo doc que o site usa para clientes; papel de equipe so o admin grava).
-- `configuracoes/sistema`: `nome_loja, cnpj, formas_pagamento[], comissao{ base, percentual_padrao }`.
+- `configuracoes/sistema`: `nome_loja, cnpj, formas_pagamento[], comissao{ base, percentual_padrao },
+  parcelamento{ maximo, minimo_parcela, juros{ credito, crediario, debito } }`. Cada forma de
+  `juros` e um mapa `"parcelas": { cliente, loja }` (percentuais): `cliente` e somado ao valor
+  cobrado do comprador quando parcela; `loja` e o custo da loja (taxa de maquininha/financiamento,
+  ex. da maquina de cartao) sobre o valor original — usado inclusive em "1" (a vista) pra
+  credito/debito, ja que taxa a vista tambem e custo real. Configurado na tela como texto
+  `"parcelas:pctCliente|pctLoja"` (ex. `"3:5|2"`), um campo por forma.
 - `configuracoes/indicadores`: `site_url, percentual, janela_dias, categorias_excluidas[]`.
-- `indicadores/{id}`: `nome, codigo, contato, ativo`. `codigo` = valor do `?ref=`.
-- `vendas/{id}`: venda da **loja fisica**. `numero, canal ("loja"), data, vendedor_uid,
-  vendedor_nome, itens[], subtotal, desconto, total, pagamentos[], status, caixa_id,
-  comissao{ base, percentual, valor, status }`.
+- `indicadores/{id}`: `nome, codigo, contato, ativo, anotacoes` (caixa de anotacoes livre do admin).
+- `vendas/{id}`: venda da **loja fisica** (ou espelho de pedido do site, `canal:"site"`).
+  `numero, canal ("loja"|"site"), data, vendedor_uid, vendedor_nome, itens[], subtotal, desconto,
+  total, pagamentos[], status, caixa_id, comissao{ base, percentual, valor, status }`. Cada
+  `pagamentos[i]` mantem `forma, valor` (valor ORIGINAL de tabela, sem juros — a base de calculo
+  de comissao/relatorios nunca muda) e, so quando ha taxa configurada pra forma+parcelas, ganha
+  `parcelas, valor_parcela` (parcelavel e >1) e os campos aditivos `juros_pct, pct_loja,
+  valor_com_juros, custo_loja, valor_liquido`. A venda toda ganha os agregados
+  `total_com_juros, custo_loja_total, valor_liquido` (todo consumidor le
+  `v.valor_liquido ?? v.total` pra nao quebrar em vendas antigas nao migradas).
+- `gastos/{id}`: despesa avulsa da loja, solta por data (nao amarrada a uma sessao de caixa).
+  `descricao, categoria (texto livre, opcional), valor, data (Timestamp editavel), observacoes,
+  criado_em, criado_por_uid, criado_por_nome`. Leitura pra qualquer staff; criar/editar/excluir
+  **so admin**.
 - `caixa/{id}`: `data, aberto_por_uid, valor_abertura, movimentos[], status,
-  valor_fechamento_informado, resumo{}`.
+  valor_fechamento_informado, resumo{ ..., valor_liquido_caixa, custo_loja_sessao,
+  gastos_sessao }`. Caixa e **unico pra loja toda** (nao "do usuario"). `resumo` guarda o valor
+  liquido contabil da sessao (vendido com juros − custo de maquininha − gastos do periodo) **a
+  parte** do "dinheiro esperado na gaveta" (que continua so o calculo fisico de dinheiro, sem
+  desconto nenhum).
 - `contadores/vendas`: `ultimo_numero` (numeracao sequencial das vendas da loja).
 - `comissoes/{AAAA-MM}/vendedores/{uid}`: consolidado do periodo.
 - `integracoes/{canal}`: tokens de marketplace (Fase 3+; `read, write: if false` — so
   o backend Admin SDK).
+
+O **Painel** consolida uma "Contabilidade mensal" (admin) direto de `vendas`+`gastos` por
+intervalo de mes — nunca somando documentos de `caixa` (evita contar gasto em dobro e cobre
+vendas 100% credito que podem fechar sem caixa aberto): Receita bruta, Juros (resultado liquido
+do parcelamento, pode ser negativo), Gastos, Comissao de vendedores, Comissao de indicadores,
+Valor liquido do mes.
 
 Colecoes **do site** que o sistema consome:
 

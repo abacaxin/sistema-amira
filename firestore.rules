@@ -518,7 +518,7 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    //  SISTEMA INTERNO (PDV / caixa / comissoes / indicadores)
+    //  SISTEMA INTERNO (PDV / caixa / vendas / comissoes / indicadores / gastos)
     //  Colecoes usadas SO pelo app interno (sistema-amira). A loja NAO toca
     //  nestas — ver comentario em cada bloco. NUNCA remover esta secao num
     //  deploy feito a partir do repo do site: ver aviso no topo do arquivo.
@@ -596,6 +596,46 @@ service cloud.firestore {
     match /indicadores/{id} {
       allow read: if ehStaff();
       allow create, update, delete: if ehAdmin();
+    }
+
+    // ── gastos/{id} ────────────────────────────────────────────────────
+    // Despesas da loja (aluguel, fornecedor, salario, etc.) — SOLTAS por
+    // data, nao amarradas a uma sessao de caixa (da pra lancar sem caixa
+    // aberto). Caixa atribui um gasto a uma sessao filtrando por essa data;
+    // o Painel soma por mes. So o admin cria/edita/exclui — deixar qualquer
+    // vendedor lancar gasto livremente permitiria forjar uma despesa pra
+    // reduzir o liquido reportado ao dono sem controle nenhum. Leitura e
+    // liberada pra qualquer staff (o resumo aparece pra todo mundo no
+    // Caixa, so a gestao completa e admin-only).
+    function chavesGastoPermitidas() {
+      return ['descricao', 'categoria', 'valor', 'data', 'observacoes',
+        'criado_em', 'criado_por_uid', 'criado_por_nome', 'atualizado_em'];
+    }
+    match /gastos/{id} {
+      allow read: if ehStaff();
+      allow create: if ehAdmin() &&
+        request.resource.data.keys().hasOnly(chavesGastoPermitidas()) &&
+        request.resource.data.keys().hasAll(['descricao', 'valor', 'data', 'criado_em', 'criado_por_uid', 'criado_por_nome']) &&
+        request.resource.data.descricao is string &&
+        request.resource.data.descricao.size() >= 1 &&
+        request.resource.data.descricao.size() <= 200 &&
+        request.resource.data.valor is number &&
+        request.resource.data.valor > 0 &&
+        request.resource.data.data is timestamp &&
+        request.resource.data.criado_por_uid == request.auth.uid &&
+        (!('categoria' in request.resource.data) ||
+          (request.resource.data.categoria is string && request.resource.data.categoria.size() <= 60)) &&
+        (!('observacoes' in request.resource.data) ||
+          (request.resource.data.observacoes is string && request.resource.data.observacoes.size() <= 500));
+      allow update: if ehAdmin() &&
+        request.resource.data.keys().hasOnly(chavesGastoPermitidas()) &&
+        request.resource.data.descricao is string &&
+        request.resource.data.descricao.size() >= 1 &&
+        request.resource.data.descricao.size() <= 200 &&
+        request.resource.data.valor is number &&
+        request.resource.data.valor > 0 &&
+        request.resource.data.data is timestamp;
+      allow delete: if ehAdmin();
     }
 
     // ── integracoes/{doc=**} ─────────────────────────────────────────

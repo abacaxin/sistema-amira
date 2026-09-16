@@ -40,6 +40,7 @@ function gastosHtml(gastos, tituloPeriodo) {
 
 const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "caixa" });
+const ehAdm = perfil.role === "admin";
 
 render();
 
@@ -126,6 +127,19 @@ async function renderBody() {
     caixa.valor_abertura + (porForma.dinheiro || 0) + suprimentos - sangrias
   );
 
+  // "Valor liquido do caixa": vendido bruto (o que o cliente efetivamente
+  // pagou, ja com juros de parcelamento) menos o custo da loja com
+  // maquininha/financiamento (ja embutido em v.valor_liquido, calculado no
+  // PDV) e menos os gastos lancados no periodo desta sessao. E um numero
+  // CONTABIL (nao mexe no "dinheiro esperado na gaveta" acima, que continua
+  // sendo so fisico) — por isso fica num card a parte, so pro admin.
+  const vendidoBruto = round2(vendas.reduce((s, v) => s + (v.total_com_juros ?? v.total ?? 0), 0));
+  const custoLojaSessao = round2(vendas.reduce((s, v) => s + (v.custo_loja_total || 0), 0));
+  const gastosSessaoTotal = round2(gastosSessao.reduce((s, g) => s + (Number(g.valor) || 0), 0));
+  const valorLiquidoCaixa = round2(
+    vendas.reduce((s, v) => s + (v.valor_liquido ?? v.total ?? 0), 0) - gastosSessaoTotal
+  );
+
   root.innerHTML = `
     <div class="card">
       <strong>Caixa aberto</strong>
@@ -151,6 +165,19 @@ async function renderBody() {
       </div>
     </div>
 
+    ${
+      ehAdm
+        ? `<div class="card">
+      <strong>Valor liquido do caixa</strong>
+      <p class="muted">Vendido bruto (com juros de parcelamento repassado ao cliente) menos custo de maquininha/financiamento e gastos lancados nesta sessao. Nao mexe no "dinheiro esperado na gaveta" acima, que continua sendo so o fisico.</p>
+      <div class="totais"><span>Vendido bruto</span><span>${brl(vendidoBruto)}</span></div>
+      <div class="totais"><span>Custo maquininha/financiamento</span><span>- ${brl(custoLojaSessao)}</span></div>
+      <div class="totais"><span>Gastos da sessao</span><span>- ${brl(gastosSessaoTotal)}</span></div>
+      <div class="totais big"><span>Valor liquido</span><span>${brl(valorLiquidoCaixa)}</span></div>
+    </div>`
+        : ""
+    }
+
     <div class="card">
       <strong>Movimentos</strong>
       <div class="tabela-wrap"><table>
@@ -175,7 +202,10 @@ async function renderBody() {
   document.getElementById("btn-sup").onclick = () => movimento("suprimento", caixa.id);
   document.getElementById("btn-san").onclick = () => movimento("sangria", caixa.id);
   document.getElementById("btn-fechar").onclick = () =>
-    fechar(caixa, esperadoDinheiro, { porForma, totalVendas, sangrias, suprimentos });
+    fechar(caixa, esperadoDinheiro, {
+      porForma, totalVendas, sangrias, suprimentos,
+      valorLiquidoCaixa, custoLojaSessao, gastosSessaoTotal,
+    });
 }
 
 function histHtml(hist) {
@@ -260,6 +290,9 @@ function fechar(caixa, esperadoDinheiro, parcial) {
           suprimentos: parcial.suprimentos,
           saldo_esperado_dinheiro: esperadoDinheiro,
           diferenca,
+          valor_liquido_caixa: parcial.valorLiquidoCaixa,
+          custo_loja_sessao: parcial.custoLojaSessao,
+          gastos_sessao: parcial.gastosSessaoTotal,
         },
       });
       toast(`Caixa fechado. Diferenca: ${brl(diferenca)}`, diferenca === 0 ? "ok" : "warn");

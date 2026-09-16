@@ -38,6 +38,16 @@ export function estoquePorModo(produto) {
   return Number(produto.estoque) || 0;
 }
 
+/**
+ * Um pedido do site conta como "venda de verdade" (pago)? O pedido continua
+ * sendo rastreado (preparando/enviado/entregue) DEPOIS de pago, entao o
+ * status muda com o tempo — o que importa e ter saido de
+ * aguardando_pagamento e nao ter sido cancelado.
+ */
+export function contaComoPago(status) {
+  return status !== "aguardando_pagamento" && status !== "cancelado";
+}
+
 /** O produto existe na modalidade? (cada modo exige o proprio preco > 0) */
 export function disponivelNoModo(produto, modo = "varejo") {
   if (modo === "atacado") return (Number(produto.precoAtacado) || 0) > 0;

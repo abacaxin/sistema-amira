@@ -6,7 +6,7 @@ import {
   getConfigIndicadores, periodoParaIntervalo,
 } from "../db.js";
 import { brl, round2 } from "../money.js";
-import { baseElegivelIndicador, derivarItensPedido } from "../produtos-schema.js";
+import { baseElegivelIndicador, derivarItensPedido, contaComoPago } from "../produtos-schema.js";
 
 const { perfil } = await requireAuth({ roles: ["admin"] });
 const root = initShell({ perfil, active: "indicadores" });
@@ -22,16 +22,6 @@ let periodo = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2,
 let indicadores = [];
 let vendidoPorCodigo = {}; // codigo -> { qtd, total } (todo o historico, sem filtro de periodo)
 let totalGeralVendido = 0;
-
-// "Pago" conta como venda de verdade — mas o pedido continua sendo
-// rastreado (preparando/enviado/entregue) DEPOIS de pago, entao o status
-// muda com o tempo conforme a retirada/entrega avanca. Filtrar so por
-// `status === "pago"` perdia o pedido assim que ele avancava pro proximo
-// status; o que importa e ter saido de aguardando_pagamento e nao ter sido
-// cancelado.
-function contaComoPago(status) {
-  return status !== "aguardando_pagamento" && status !== "cancelado";
-}
 
 // Camada principal (pra excluir iPhone da base de comissao) muda raramente
 // — busca uma vez e reaproveita, em vez de re-buscar a cada apuracao.

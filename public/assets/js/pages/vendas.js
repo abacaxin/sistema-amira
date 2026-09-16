@@ -5,7 +5,7 @@ import {
   doc, runTransaction, serverTimestamp, getConfigSistema,
 } from "../db.js";
 import { brl, round2 } from "../money.js";
-import { derivarItensPedido } from "../produtos-schema.js";
+import { derivarItensPedido, contaComoPago } from "../produtos-schema.js";
 
 const CANAIS = { loja: "Loja fisica", site: "Site proprio", mercado_livre: "Mercado Livre", shopee: "Shopee" };
 const FORMAS_LABEL = { dinheiro: "Dinheiro", pix: "Pix", debito: "Debito", credito: "Credito", crediario: "Crediario" };
@@ -117,14 +117,9 @@ async function carregarTotalIndicadores(lista) {
       getDocs(collection(db, "produtos")),
     ]);
     const produtosMap = new Map(produtosSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
-    // "Pago" conta como venda de verdade — mas o pedido continua sendo
-    // rastreado (preparando/enviado/entregue) DEPOIS de pago, entao o
-    // status muda com o tempo. Filtrar so por `=== "pago"` perdia o pedido
-    // assim que ele avancava; o que importa e ter saido de
-    // aguardando_pagamento e nao ter sido cancelado.
     const pedidos = pedidosSnap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((p) => p.status !== "aguardando_pagamento" && p.status !== "cancelado");
+      .filter((p) => contaComoPago(p.status));
 
     let total = 0;
     for (const p of pedidos) total = round2(total + derivarItensPedido(p, produtosMap).subtotal);

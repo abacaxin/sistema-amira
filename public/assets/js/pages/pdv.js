@@ -7,12 +7,11 @@ import {
 import { brl, round2, parseNum } from "../money.js";
 import { calcularComissao } from "../regras.js";
 import { infoPreco, estoquePorModo } from "../produtos-schema.js";
+import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela } from "../juros.js";
 
 const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "pdv" });
 root.innerHTML = `<div class="card">Carregando...</div>`;
-
-const FORMAS_PARCELAVEIS = new Set(["credito", "crediario"]);
 
 try {
 const config = await getConfigSistema();
@@ -20,29 +19,6 @@ const formas = config.formas_pagamento?.length
   ? config.formas_pagamento
   : ["dinheiro", "pix", "debito", "credito", "crediario"];
 const parc = config.parcelamento || { maximo: 12, minimo_parcela: 0, juros: {} };
-
-// Quantas parcelas cabem num valor (respeita o maximo da config E o valor
-// minimo por parcela, ex.: nao deixa parcelar R$40 em 12x se o minimo por
-// parcela e R$50).
-function parcelasDisponiveis(valor) {
-  const max = Math.max(1, Math.trunc(parc.maximo) || 12);
-  const min = Math.max(0, Number(parc.minimo_parcela) || 0);
-  const porMinimo = min > 0 ? Math.max(1, Math.floor(valor / min)) : max;
-  const limite = Math.max(1, Math.min(max, porMinimo));
-  return Array.from({ length: limite }, (_, i) => i + 1);
-}
-
-// Juros configurado para essa quantidade de parcelas (0 se nao configurado).
-function jurosDe(numParcelas) {
-  return Number(parc.juros?.[String(numParcelas)] || 0);
-}
-
-function infoParcela(valor, numParcelas) {
-  const jurosPct = jurosDe(numParcelas);
-  const valorComJuros = round2(valor * (1 + jurosPct / 100));
-  const valorParcela = round2(valorComJuros / numParcelas);
-  return { jurosPct, valorComJuros, valorParcela };
-}
 
 // Caixa e UNICO pra loja toda — nao e "do usuario logado". Qualquer
 // vendedor/admin vende contra o mesmo caixa aberto, seja quem for que
@@ -225,21 +201,21 @@ function renderPags() {
       const parcelavel = FORMAS_PARCELAVEIS.has(pg.forma);
       let linhaParcelas = "";
       if (parcelavel) {
-        const opcoes = parcelasDisponiveis(pg.valor);
+        const opcoes = parcelasDisponiveis(pg.valor, parc);
         const numParcelas = opcoes.includes(pg.parcelas) ? pg.parcelas : 1;
         pg.parcelas = numParcelas;
-        const { jurosPct, valorComJuros, valorParcela } = infoParcela(pg.valor, numParcelas);
+        const { pctCliente, valorComJuros, valorParcela } = infoParcela(pg.valor, numParcelas, taxasDe(config, pg.forma, numParcelas));
         linhaParcelas = `
           <div class="cart-line">
             <select data-i="${i}" class="pp">
               ${opcoes
                 .map((n) => {
-                  const j = jurosDe(n);
+                  const j = taxasDe(config, pg.forma, n).cliente;
                   return `<option value="${n}" ${n === numParcelas ? "selected" : ""}>${n}x${j ? ` (${j}% juros)` : " sem juros"}</option>`;
                 })
                 .join("")}
             </select>
-            <span class="muted">${numParcelas}x de ${brl(valorParcela)}${jurosPct ? ` (total ${brl(valorComJuros)} com juros)` : ""}</span>
+            <span class="muted">${numParcelas}x de ${brl(valorParcela)}${pctCliente ? ` (total ${brl(valorComJuros)} com juros)` : ""}</span>
           </div>`;
       }
       return `<div class="cart-line">
@@ -296,17 +272,31 @@ function calc() {
   const subtotal = round2(carrinho.reduce((s, l) => s + l.preco_unit * l.qtd, 0));
   const desconto = Math.max(0, round2(parseNum($("#desconto").value)));
   const total = round2(subtotal - desconto);
+  // `pago` continua validando contra o valor ORIGINAL (pg.valor) de cada
+  // forma — o juros do cliente e um acrescimo no que a maquininha cobra,
+  // nao muda quanto do total da venda aquela forma "cobre". Isso mantem a
+  // validacao pago===total intacta mesmo com juros de verdade.
   const pago = round2(pagamentos.reduce((s, p) => s + (p.valor || 0), 0));
   return { subtotal, desconto, total, pago };
+}
+
+// Info completa de juros pra um pagamento — mesma regra usada em renderPags,
+// no preview do total e na hora de gravar a venda: forma parcelavel usa a
+// quantidade escolhida, as demais (ex.: debito) usam sempre 1x.
+function infoPagamento(p) {
+  const parcelas = FORMAS_PARCELAVEIS.has(p.forma) ? Math.max(1, Math.trunc(p.parcelas) || 1) : 1;
+  return { parcelas, ...infoParcela(p.valor || 0, parcelas, taxasDe(config, p.forma, parcelas)) };
 }
 
 function renderTotais() {
   const { subtotal, desconto, total, pago } = calc();
   const falta = round2(total - pago);
+  const totalComJuros = round2(pagamentos.reduce((s, p) => s + infoPagamento(p).valorComJuros, 0));
   $("#totais").innerHTML = `
     <div class="totais"><span>Subtotal</span><span>${brl(subtotal)}</span></div>
     <div class="totais"><span>Desconto</span><span>- ${brl(desconto)}</span></div>
     <div class="totais big"><span>Total</span><span>${brl(total)}</span></div>
+    ${totalComJuros !== total ? `<div class="totais"><span>Total com juros (a cobrar do cliente)</span><span>${brl(totalComJuros)}</span></div>` : ""}
     <div class="totais"><span>Pago</span><span>${brl(pago)}</span></div>
     <div class="totais"><span>${falta > 0 ? "Falta" : falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(falta))}</span></div>`;
 }
@@ -353,14 +343,31 @@ async function finalizar() {
     const cliente = $("#cliente").value.trim() || null;
     const clienteContato = $("#cliente-contato").value.trim() || null;
     const observacoes = $("#observacoes").value.trim() || null;
+    // pg.valor continua sendo o valor ORIGINAL (de tabela) alocado pra essa
+    // forma — os campos de juros abaixo sao aditivos, pra nao mexer em nada
+    // que ja le `valor`/`total` da venda (comissao do vendedor, listagem de
+    // Vendas, dashboard, relatorios). So gravamos os campos de juros quando
+    // ha taxa configurada pra essa forma+parcelas (cobre credito/crediario
+    // parcelado E credito/debito a vista com taxa de maquininha).
     const pagamentosSalvos = pagamentos.map((p) => {
-      const base = { forma: p.forma, valor: round2(p.valor) };
-      if (FORMAS_PARCELAVEIS.has(p.forma) && p.parcelas > 1) {
-        const { jurosPct, valorComJuros, valorParcela } = infoParcela(p.valor, p.parcelas);
-        return { ...base, parcelas: p.parcelas, juros_pct: jurosPct, valor_com_juros: valorComJuros, valor_parcela: valorParcela };
-      }
-      return base;
+      const valor = round2(p.valor);
+      const base = { forma: p.forma, valor };
+      if (!FORMAS_JUROS.includes(p.forma)) return base;
+      const { parcelas, pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela } = infoPagamento(p);
+      if (!pctCliente && !pctLoja) return base;
+      return {
+        ...base,
+        ...(FORMAS_PARCELAVEIS.has(p.forma) && parcelas > 1 ? { parcelas, valor_parcela: valorParcela } : {}),
+        juros_pct: pctCliente,
+        pct_loja: pctLoja,
+        valor_com_juros: valorComJuros,
+        custo_loja: custoLoja,
+        valor_liquido: valorLiquido,
+      };
     });
+    const totalComJuros = round2(pagamentosSalvos.reduce((s, p) => s + (p.valor_com_juros ?? p.valor), 0));
+    const custoLojaTotal = round2(pagamentosSalvos.reduce((s, p) => s + (p.custo_loja || 0), 0));
+    const valorLiquido = round2(pagamentosSalvos.reduce((s, p) => s + (p.valor_liquido ?? p.valor), 0));
 
     const numero = await runTransaction(db, async (t) => {
       const contRef = doc(db, "contadores", "vendas");
@@ -400,6 +407,9 @@ async function finalizar() {
         subtotal,
         desconto,
         total,
+        total_com_juros: totalComJuros,
+        custo_loja_total: custoLojaTotal,
+        valor_liquido: valorLiquido,
         pagamentos: pagamentosSalvos,
         status: "concluida",
         caixa_id: caixaAbertoId || null,
@@ -409,7 +419,7 @@ async function finalizar() {
     });
 
     toast(`Venda #${numero} registrada.`, "ok");
-    recibo({ numero, itens: itensVenda, subtotal, desconto, total, pagamentos: pagamentosSalvos, cliente, clienteContato, observacoes });
+    recibo({ numero, itens: itensVenda, subtotal, desconto, total, totalComJuros, pagamentos: pagamentosSalvos, cliente, clienteContato, observacoes });
 
     // atualiza estoque em memoria
     itensVenda.forEach((it) => {
@@ -448,10 +458,11 @@ function recibo(v) {
     <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>${brl(v.subtotal)}</span></div>
     <div style="display:flex;justify-content:space-between"><span>Desconto</span><span>- ${brl(v.desconto)}</span></div>
     <div style="display:flex;justify-content:space-between;font-weight:700"><span>Total</span><span>${brl(v.total)}</span></div>
+    ${v.totalComJuros && v.totalComJuros !== v.total ? `<div style="display:flex;justify-content:space-between;font-weight:700"><span>Total com juros</span><span>${brl(v.totalComJuros)}</span></div>` : ""}
     ${v.pagamentos
       .map(
         (p) =>
-          `<div style="display:flex;justify-content:space-between"><span>${p.forma}${p.parcelas > 1 ? ` (${p.parcelas}x de ${brl(p.valor_parcela)})` : ""}</span><span>${brl(p.valor)}</span></div>`
+          `<div style="display:flex;justify-content:space-between"><span>${p.forma}${p.parcelas > 1 ? ` (${p.parcelas}x de ${brl(p.valor_parcela)})` : ""}</span><span>${brl(p.valor_com_juros ?? p.valor)}</span></div>`
       )
       .join("")}
     <hr>

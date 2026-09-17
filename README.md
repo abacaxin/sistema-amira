@@ -219,16 +219,23 @@ Colecoes **do sistema**:
   valor_com_juros, custo_loja, valor_liquido`. A venda toda ganha os agregados
   `total_com_juros, custo_loja_total, valor_liquido` (todo consumidor le
   `v.valor_liquido ?? v.total` pra nao quebrar em vendas antigas nao migradas).
+  **Importante**: `valor_liquido` desconta `custo_loja` do valor ORIGINAL (`valor`/`total`), NAO
+  do valor com juros do cliente (`valor_com_juros`/`total_com_juros`) — o juros cobrado do
+  cliente e so uma referencia informativa, nunca compensa o custo da maquininha nesse campo. Quem
+  quiser o resultado financeiro do parcelamento (juros do cliente menos custo da loja) calcula
+  na mao a partir dos campos brutos — e o que o Painel faz na linha "Juros" da contabilidade
+  mensal (ver abaixo).
 - `gastos/{id}`: despesa avulsa da loja, solta por data (nao amarrada a uma sessao de caixa).
   `descricao, categoria (texto livre, opcional), valor, data (Timestamp editavel), observacoes,
   criado_em, criado_por_uid, criado_por_nome`. Leitura pra qualquer staff; criar/editar/excluir
   **so admin**.
 - `caixa/{id}`: `data, aberto_por_uid, valor_abertura, movimentos[], status,
   valor_fechamento_informado, resumo{ ..., valor_liquido_caixa, custo_loja_sessao,
-  gastos_sessao }`. Caixa e **unico pra loja toda** (nao "do usuario"). `resumo` guarda o valor
-  liquido contabil da sessao (vendido com juros − custo de maquininha − gastos do periodo) **a
-  parte** do "dinheiro esperado na gaveta" (que continua so o calculo fisico de dinheiro, sem
-  desconto nenhum).
+  gastos_sessao, juros_cliente_sessao }`. Caixa e **unico pra loja toda** (nao "do usuario").
+  `resumo` guarda o valor liquido contabil da sessao (vendido de TABELA, sem juros do cliente,
+  menos custo de maquininha menos gastos do periodo) **a parte** do "dinheiro esperado na
+  gaveta" (que continua so o calculo fisico de dinheiro, sem desconto nenhum);
+  `juros_cliente_sessao` e so informativo, ja fora desse liquido.
 - `contadores/vendas`: `ultimo_numero` (numeracao sequencial das vendas da loja).
 - `comissoes/{AAAA-MM}/vendedores/{uid}`: consolidado do periodo.
 - `integracoes/{canal}`: tokens de marketplace (Fase 3+; `read, write: if false` — so

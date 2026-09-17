@@ -19,7 +19,7 @@ export const CONFIG_SISTEMA_PADRAO = {
   // pagamento, cada uma { "parcelas": {cliente, loja} } — `cliente` e o %
   // somado ao que o cliente paga, `loja` e o % de custo da loja (ex.: taxa
   // da maquininha) sobre o valor original. Chave ausente = sem juros/custo.
-  // Ver public/assets/js/juros.js (parseTabelaJuros/infoParcela).
+  // Ver public/assets/js/juros.js (infoParcela) e a UI em pages/config.js.
   parcelamento: { maximo: 12, minimo_parcela: 0, juros: { credito: {}, crediario: {}, debito: {} } },
 };
 

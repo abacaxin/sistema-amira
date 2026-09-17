@@ -43,14 +43,18 @@ const caixaDoc = (await getDocs(query(
 ))).docs[0];
 const caixa = caixaDoc ? caixaDoc.data() : null;
 
-// ---- comissao do mes (loja) ----
-const qCom = ehAdm
-  ? query(collection(db, "vendas"), where("canal", "==", "loja"), where("status", "==", "concluida"), where("data", ">=", m0))
+// ---- vendas do mes (todos os canais, igual "vendas hoje" — comissao
+// continua so canal loja) ----
+const qMes = ehAdm
+  ? query(collection(db, "vendas"), where("status", "==", "concluida"), where("data", ">=", m0))
   : query(collection(db, "vendas"), where("vendedor_uid", "==", perfil.id), where("data", ">=", m0));
-const vendasMes = (await getDocs(qCom)).docs
+const vendasMes = (await getDocs(qMes)).docs
   .map((d) => d.data())
-  .filter((v) => v.canal === "loja" && v.status === "concluida");
-const comissaoMes = vendasMes.reduce((s, v) => s + (v.comissao?.valor || 0), 0);
+  .filter((v) => v.status === "concluida");
+const qtdMes = vendasMes.length;
+const comissaoMes = vendasMes
+  .filter((v) => v.canal === "loja")
+  .reduce((s, v) => s + (v.comissao?.valor || 0), 0);
 
 // ---- top produtos hoje ----
 const prod = {};
@@ -66,8 +70,9 @@ vendasHoje.forEach((v) =>
 const top = Object.values(prod).sort((a, b) => b.qtd - a.qtd).slice(0, 5);
 
 root.innerHTML = `
-  <div class="grid cols-4">
+  <div class="grid cols-5">
     <div class="card kpi"><div class="l">Vendas hoje</div><div class="n">${qtdHoje}</div></div>
+    <div class="card kpi"><div class="l">Vendas no mes</div><div class="n">${qtdMes}</div></div>
     <div class="card kpi"><div class="l">Faturamento hoje</div><div class="n">${brl(totalHoje)}</div></div>
     <div class="card kpi"><div class="l">Ticket medio</div><div class="n">${brl(ticket)}</div></div>
     <div class="card kpi"><div class="l">${ehAdm ? "Comissoes no mes" : "Minha comissao no mes"}</div><div class="n">${brl(comissaoMes)}</div></div>

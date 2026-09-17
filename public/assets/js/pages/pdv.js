@@ -204,7 +204,6 @@ function renderPags() {
         const opcoes = parcelasDisponiveis(pg.valor, parc);
         const numParcelas = opcoes.includes(pg.parcelas) ? pg.parcelas : 1;
         pg.parcelas = numParcelas;
-        const { pctCliente, valorComJuros, valorParcela } = infoParcela(pg.valor, numParcelas, taxasDe(config, pg.forma, numParcelas));
         linhaParcelas = `
           <div class="cart-line">
             <select data-i="${i}" class="pp">
@@ -215,8 +214,24 @@ function renderPags() {
                 })
                 .join("")}
             </select>
-            <span class="muted">${numParcelas}x de ${brl(valorParcela)}${pctCliente ? ` (total ${brl(valorComJuros)} com juros)` : ""}</span>
           </div>`;
+      }
+      // Mostra a taxa do CLIENTE (somada ao que ele paga) e da LOJA (custo de
+      // maquininha/financiamento, descontado do que a loja recebe) pra
+      // qualquer forma em FORMAS_JUROS — inclusive debito, que nao parcela
+      // mas pode ter taxa a vista configurada em "1". Sem isso o vendedor nao
+      // tinha como ver o custo da loja antes de finalizar a venda.
+      let linhaTaxa = "";
+      if (FORMAS_JUROS.includes(pg.forma)) {
+        const { pctCliente, pctLoja, valorComJuros, custoLoja, valorParcela, parcelas } = infoPagamento(pg);
+        const partes = pctCliente || pctLoja
+          ? [
+              parcelavel && parcelas > 1 ? `${parcelas}x de ${brl(valorParcela)}` : "",
+              `cliente: ${pctCliente ? `+${pctCliente}% (total ${brl(valorComJuros)})` : "sem juros"}`,
+              `loja: ${pctLoja ? `-${pctLoja}% (${brl(custoLoja)} de custo)` : "sem custo"}`,
+            ].filter(Boolean)
+          : [`sem taxa configurada pra ${pg.forma}${parcelavel ? ` em ${pg.parcelas}x` : ""} — ajuste em Configuracoes`];
+        linhaTaxa = `<p class="muted" style="margin:2px 0 8px;font-size:12px">${partes.join(" &middot; ")}</p>`;
       }
       return `<div class="cart-line">
         <select data-i="${i}" class="pf">${formas
@@ -224,7 +239,7 @@ function renderPags() {
           .join("")}</select>
         <input class="pv" data-i="${i}" value="${pg.valor}" inputmode="decimal" style="width:120px">
         <button class="btn ghost prm" data-i="${i}">&times;</button>
-      </div>${linhaParcelas}`;
+      </div>${linhaParcelas}${linhaTaxa}`;
     })
     .join("");
   $("#pags")
@@ -236,6 +251,7 @@ function renderPags() {
           pg.forma = s.value;
           pg.parcelas = 1;
           renderPags();
+          renderTotais();
         })
     );
   $("#pags")
@@ -255,6 +271,7 @@ function renderPags() {
         (s.onchange = () => {
           pagamentos[+s.dataset.i].parcelas = Math.trunc(+s.value) || 1;
           renderPags();
+          renderTotais();
         })
     );
   $("#pags")
@@ -288,15 +305,50 @@ function infoPagamento(p) {
   return { parcelas, ...infoParcela(p.valor || 0, parcelas, taxasDe(config, p.forma, parcelas)) };
 }
 
+// pg.valor continua sendo o valor ORIGINAL (de tabela) alocado pra essa
+// forma — os campos de juros abaixo sao aditivos, pra nao mexer em nada que
+// ja le `valor`/`total` da venda (comissao do vendedor, listagem de Vendas,
+// dashboard, relatorios). So grava os campos de juros quando ha taxa
+// configurada pra essa forma+parcelas (cobre credito/crediario parcelado E
+// credito/debito a vista com taxa de maquininha). Usada tanto no preview
+// (renderTotais) quanto ao finalizar, pra nunca divergir do que e salvo.
+function pagamentosComJuros(pags) {
+  return pags.map((p) => {
+    const valor = round2(p.valor);
+    const base = { forma: p.forma, valor };
+    if (!FORMAS_JUROS.includes(p.forma)) return base;
+    const { parcelas, pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela } = infoPagamento(p);
+    if (!pctCliente && !pctLoja) return base;
+    return {
+      ...base,
+      ...(FORMAS_PARCELAVEIS.has(p.forma) && parcelas > 1 ? { parcelas, valor_parcela: valorParcela } : {}),
+      juros_pct: pctCliente,
+      pct_loja: pctLoja,
+      valor_com_juros: valorComJuros,
+      custo_loja: custoLoja,
+      valor_liquido: valorLiquido,
+    };
+  });
+}
+
+function agregarJuros(pagsComJuros) {
+  const totalComJuros = round2(pagsComJuros.reduce((s, p) => s + (p.valor_com_juros ?? p.valor), 0));
+  const custoLojaTotal = round2(pagsComJuros.reduce((s, p) => s + (p.custo_loja || 0), 0));
+  const valorLiquido = round2(pagsComJuros.reduce((s, p) => s + (p.valor_liquido ?? p.valor), 0));
+  return { totalComJuros, custoLojaTotal, valorLiquido };
+}
+
 function renderTotais() {
   const { subtotal, desconto, total, pago } = calc();
   const falta = round2(total - pago);
-  const totalComJuros = round2(pagamentos.reduce((s, p) => s + infoPagamento(p).valorComJuros, 0));
+  const { totalComJuros, custoLojaTotal, valorLiquido } = agregarJuros(pagamentosComJuros(pagamentos));
   $("#totais").innerHTML = `
     <div class="totais"><span>Subtotal</span><span>${brl(subtotal)}</span></div>
     <div class="totais"><span>Desconto</span><span>- ${brl(desconto)}</span></div>
     <div class="totais big"><span>Total</span><span>${brl(total)}</span></div>
     ${totalComJuros !== total ? `<div class="totais"><span>Total com juros (a cobrar do cliente)</span><span>${brl(totalComJuros)}</span></div>` : ""}
+    ${custoLojaTotal > 0 ? `<div class="totais"><span>Custo da loja (maquininha/financiamento)</span><span>- ${brl(custoLojaTotal)}</span></div>` : ""}
+    ${custoLojaTotal > 0 ? `<div class="totais"><span>Valor liquido estimado</span><span>${brl(valorLiquido)}</span></div>` : ""}
     <div class="totais"><span>Pago</span><span>${brl(pago)}</span></div>
     <div class="totais"><span>${falta > 0 ? "Falta" : falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(falta))}</span></div>`;
 }
@@ -343,31 +395,8 @@ async function finalizar() {
     const cliente = $("#cliente").value.trim() || null;
     const clienteContato = $("#cliente-contato").value.trim() || null;
     const observacoes = $("#observacoes").value.trim() || null;
-    // pg.valor continua sendo o valor ORIGINAL (de tabela) alocado pra essa
-    // forma — os campos de juros abaixo sao aditivos, pra nao mexer em nada
-    // que ja le `valor`/`total` da venda (comissao do vendedor, listagem de
-    // Vendas, dashboard, relatorios). So gravamos os campos de juros quando
-    // ha taxa configurada pra essa forma+parcelas (cobre credito/crediario
-    // parcelado E credito/debito a vista com taxa de maquininha).
-    const pagamentosSalvos = pagamentos.map((p) => {
-      const valor = round2(p.valor);
-      const base = { forma: p.forma, valor };
-      if (!FORMAS_JUROS.includes(p.forma)) return base;
-      const { parcelas, pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela } = infoPagamento(p);
-      if (!pctCliente && !pctLoja) return base;
-      return {
-        ...base,
-        ...(FORMAS_PARCELAVEIS.has(p.forma) && parcelas > 1 ? { parcelas, valor_parcela: valorParcela } : {}),
-        juros_pct: pctCliente,
-        pct_loja: pctLoja,
-        valor_com_juros: valorComJuros,
-        custo_loja: custoLoja,
-        valor_liquido: valorLiquido,
-      };
-    });
-    const totalComJuros = round2(pagamentosSalvos.reduce((s, p) => s + (p.valor_com_juros ?? p.valor), 0));
-    const custoLojaTotal = round2(pagamentosSalvos.reduce((s, p) => s + (p.custo_loja || 0), 0));
-    const valorLiquido = round2(pagamentosSalvos.reduce((s, p) => s + (p.valor_liquido ?? p.valor), 0));
+    const pagamentosSalvos = pagamentosComJuros(pagamentos);
+    const { totalComJuros, custoLojaTotal, valorLiquido } = agregarJuros(pagamentosSalvos);
 
     const numero = await runTransaction(db, async (t) => {
       const contRef = doc(db, "contadores", "vendas");

@@ -2,7 +2,7 @@ import { requireAuth } from "../auth.js";
 import { initShell, toast, escapeHtml } from "../ui.js";
 import { db, doc, getDoc, setDoc, updateDoc, serverTimestamp } from "../db.js";
 import { parseNum } from "../money.js";
-import { FORMAS_JUROS, parseTabelaJuros, formatarTabelaJuros } from "../juros.js";
+import { FORMAS_JUROS } from "../juros.js";
 
 const BASES = ["total", "total_sem_desconto", "margem"];
 const FORMA_LABEL = { credito: "Crédito", crediario: "Crediário", debito: "Débito" };
@@ -52,13 +52,21 @@ root.innerHTML = `
       <div><label>Maximo de parcelas</label><input id="parc-max" value="${parc.maximo ?? 12}"></div>
       <div><label>Valor minimo por parcela (R$)</label><input id="parc-min" value="${parc.minimo_parcela ?? 0}"></div>
     </div>
-    <p class="muted">Cada entrada e <code>parcelas:jurosCliente|custoLoja</code>, separadas por virgula. <code>jurosCliente</code> e somado ao valor que o cliente paga nessa forma; <code>custoLoja</code> e o custo da loja (ex.: taxa da maquininha) sobre o valor original — os dois sao independentes, nao precisam ser iguais, e o <code>|custoLoja</code> e opcional (fica 0 se omitido). Quantidade nao listada = sem juros nem custo. Debito nunca parcela — use so a entrada <code>1:...</code> pra registrar a taxa do debito a vista.</p>
-    ${FORMAS_JUROS.map(
-      (forma) => `
-      <label>Juros no ${FORMA_LABEL[forma]}</label>
-      <input id="juros-${forma}" value="${escapeHtml(formatarTabelaJuros(parc.juros?.[forma]))}" placeholder="${forma === "debito" ? "ex.: 1:0|1.5" : "ex.: 1:0|3, 3:5|2, 6:12|4"}">`
-    ).join("")}
-    <button class="btn" id="salvar-parc" style="margin-top:8px">Salvar parcelamento</button>
+    <p class="muted">Uma linha por quantidade de parcelas. <strong>Cliente</strong> e o juros somado ao valor que o cliente paga nessa forma; <strong>loja</strong> e o custo da loja (ex.: taxa da maquininha) sobre o valor original — os dois sao independentes, nao precisam ser iguais. Quantidade sem linha = sem juros nem custo.</p>
+
+    <label>Juros no Crédito</label>
+    <div class="juros-linhas" id="juros-linhas-credito"></div>
+    <button type="button" class="btn ghost" id="add-parcela-credito" style="margin-top:6px">+ Adicionar parcela</button>
+
+    <label style="margin-top:20px">Juros no Crediário</label>
+    <div class="juros-linhas" id="juros-linhas-crediario"></div>
+    <button type="button" class="btn ghost" id="add-parcela-crediario" style="margin-top:6px">+ Adicionar parcela</button>
+
+    <label style="margin-top:20px">Juros no Débito</label>
+    <p class="muted" style="margin:-2px 0 6px">Debito nunca parcela — so a taxa a vista.</p>
+    <div class="juros-linhas" id="juros-linhas-debito"></div>
+
+    <button class="btn" id="salvar-parc" style="margin-top:16px">Salvar parcelamento</button>
   </div>
 
   <div class="card">
@@ -73,6 +81,82 @@ root.innerHTML = `
     <p class="muted">No site, iPhone e a opcao da camada principal cujo slug comeca com <code>iphone</code>. O prefixo "iphone" ja e reconhecido automaticamente; liste aqui outros slugs a excluir, se houver.</p>
     <button class="btn" id="salvar-ind" style="margin-top:8px">Salvar indicadores</button>
   </div>`;
+
+// ── Juros por parcela: uma linha por quantidade, editavel/removivel na hora
+// (credito/crediario) — debito fica fixo em "a vista" (nunca parcela de
+// verdade, so tem sentido a taxa em 1x). Le/grava sempre o objeto
+// {parcelas: {cliente, loja}} direto, sem passar por formato de texto.
+function linhaJurosHtml(parcela, taxas, removivel) {
+  return `
+    <div class="cart-line juros-linha">
+      ${
+        removivel
+          ? `<input type="number" min="1" step="1" class="jl-parcela" value="${parcela}" aria-label="Numero de parcelas" style="width:56px">`
+          : `<input type="number" value="1" disabled class="jl-parcela" aria-label="Debito e sempre a vista" style="width:56px">`
+      }
+      <span class="muted">x &middot; cliente</span>
+      <input type="number" min="0" step="0.01" class="jl-cliente" value="${Number(taxas?.cliente) || 0}" aria-label="Juros do cliente, em porcentagem">
+      <span class="muted">% &middot; loja</span>
+      <input type="number" min="0" step="0.01" class="jl-loja" value="${Number(taxas?.loja) || 0}" aria-label="Custo da loja, em porcentagem">
+      <span class="muted">%</span>
+      ${removivel ? `<button type="button" class="btn ghost jl-remover" aria-label="Remover esta parcela">&times;</button>` : ""}
+    </div>`;
+}
+
+function ligarRemocao(forma) {
+  document.querySelectorAll(`#juros-linhas-${forma} .jl-remover`).forEach((b) => {
+    b.onclick = () => {
+      b.closest(".juros-linha").remove();
+      if (!document.querySelector(`#juros-linhas-${forma} .juros-linha`))
+        document.getElementById(`juros-linhas-${forma}`).innerHTML = `<p class="muted">Nenhuma parcela configurada.</p>`;
+    };
+  });
+}
+
+function montarLinhasForma(forma) {
+  const container = document.getElementById(`juros-linhas-${forma}`);
+  const tabela = parc.juros?.[forma] || {};
+  if (forma === "debito") {
+    container.innerHTML = linhaJurosHtml(1, tabela["1"], false);
+    return;
+  }
+  const parcelas = Object.keys(tabela).map(Number).sort((a, b) => a - b);
+  container.innerHTML = parcelas.length
+    ? parcelas.map((p) => linhaJurosHtml(p, tabela[String(p)], true)).join("")
+    : `<p class="muted">Nenhuma parcela configurada.</p>`;
+  ligarRemocao(forma);
+}
+
+montarLinhasForma("credito");
+montarLinhasForma("crediario");
+montarLinhasForma("debito");
+
+for (const forma of ["credito", "crediario"]) {
+  document.getElementById(`add-parcela-${forma}`).onclick = () => {
+    const container = document.getElementById(`juros-linhas-${forma}`);
+    container.querySelector("p.muted")?.remove();
+    const existentes = container.querySelectorAll(".jl-parcela");
+    const proxima = Array.from(existentes).reduce((m, inp) => Math.max(m, Math.trunc(+inp.value) || 0), 0) + 1;
+    container.insertAdjacentHTML("beforeend", linhaJurosHtml(proxima, { cliente: 0, loja: 0 }, true));
+    ligarRemocao(forma);
+    const novas = container.querySelectorAll(".jl-parcela");
+    novas[novas.length - 1].focus();
+  };
+}
+
+/** Le as linhas da tela e monta {parcelas: {cliente, loja}} pra essa forma. */
+function lerTabelaDaTela(forma) {
+  const tabela = {};
+  let duplicada = false;
+  document.querySelectorAll(`#juros-linhas-${forma} .juros-linha`).forEach((linha) => {
+    const parcela = Math.max(1, Math.trunc(parseNum(linha.querySelector(".jl-parcela").value)) || 1);
+    const cliente = Math.max(0, parseNum(linha.querySelector(".jl-cliente").value));
+    const loja = Math.max(0, parseNum(linha.querySelector(".jl-loja").value));
+    if (tabela[String(parcela)]) duplicada = true;
+    tabela[String(parcela)] = { cliente, loja };
+  });
+  return { tabela, duplicada };
+}
 
 document.getElementById("salvar").onclick = async () => {
   await setDoc(
@@ -99,7 +183,7 @@ document.getElementById("salvar").onclick = async () => {
 document.getElementById("salvar-parc").onclick = async () => {
   // updateDoc com caminhos pontilhados (nao setDoc({merge:true})): merge do
   // Firestore em mapa aninhado e RECURSIVO — ele so sobrescreveria as chaves
-  // novas, e uma parcela apagada do texto continuaria existindo no banco.
+  // novas, e uma parcela removida da tela continuaria existindo no banco.
   // Caminho pontilhado substitui o mapa daquela forma por inteiro.
   const dados = {
     "parcelamento.maximo": Math.max(1, Math.trunc(parseNum(document.getElementById("parc-max").value)) || 12),
@@ -107,7 +191,9 @@ document.getElementById("salvar-parc").onclick = async () => {
     atualizadoEm: serverTimestamp(),
   };
   for (const forma of FORMAS_JUROS) {
-    dados[`parcelamento.juros.${forma}`] = parseTabelaJuros(document.getElementById(`juros-${forma}`).value);
+    const { tabela, duplicada } = lerTabelaDaTela(forma);
+    if (duplicada) return toast(`Ha parcelas repetidas em "${FORMA_LABEL[forma]}" — corrija antes de salvar.`, "err");
+    dados[`parcelamento.juros.${forma}`] = tabela;
   }
 
   try {

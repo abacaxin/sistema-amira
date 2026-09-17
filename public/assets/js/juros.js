@@ -29,38 +29,6 @@ export function parcelasDisponiveis(valor, parc) {
   return Array.from({ length: limite }, (_, i) => i + 1);
 }
 
-/**
- * Converte o texto de configuracao "parcelas:pctCliente|pctLoja, ..." em
- * {"parcelas": {cliente, loja}}. O "|pctLoja" e opcional (fica 0 se omitido
- * — ex.: "3:2.5" = 3x cobra 2,5% do cliente, sem custo registrado pra loja).
- */
-export function parseTabelaJuros(texto) {
-  const tabela = {};
-  String(texto || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .forEach((par) => {
-      const [parcelasTxt, resto] = par.split(":");
-      const parcelas = Math.trunc(Number(String(parcelasTxt || "").trim())) || 0;
-      if (parcelas < 1) return;
-      const [clienteTxt, lojaTxt] = String(resto || "0").split("|");
-      tabela[String(parcelas)] = {
-        cliente: Number(String(clienteTxt || "0").trim()) || 0,
-        loja: Number(String(lojaTxt ?? "0").trim()) || 0,
-      };
-    });
-  return tabela;
-}
-
-/** Inverso de parseTabelaJuros — preenche o textarea de configuracao. */
-export function formatarTabelaJuros(tabela) {
-  return Object.entries(tabela || {})
-    .sort((a, b) => Number(a[0]) - Number(b[0]))
-    .map(([n, r]) => `${n}:${r?.cliente ?? 0}${r?.loja ? `|${r.loja}` : ""}`)
-    .join(", ");
-}
-
 /** Taxas {cliente, loja} configuradas pra essa forma + quantidade de parcelas. */
 export function taxasDe(config, forma, parcelas) {
   const tabela = config?.parcelamento?.juros?.[forma] || {};

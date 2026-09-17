@@ -163,12 +163,20 @@ async function carregarContabilidade(periodo) {
       vendasLoja.reduce((s, v) => s + (v.total || 0), 0) +
       vendasSite.reduce((s, v) => s + (v.total || 0), 0)
     );
-    // Juros = resultado financeiro do parcelamento (pode ser negativo, se a
-    // loja cobra do cliente menos do que a taxa da maquininha custa).
-    // valor_liquido ja vem com o custo da loja descontado (calculado no
-    // PDV); site nao tem esse conceito (valor_liquido ausente = total).
+    // Juros = resultado financeiro do parcelamento (juros cobrado do
+    // cliente menos custo da loja com a maquininha/financiamento); pode ser
+    // negativo se a loja cobra do cliente menos do que a taxa custa. Vem
+    // direto dos campos brutos (total_com_juros/total/custo_loja_total), NAO
+    // de `valor_liquido` — esse campo, no Caixa, desconta o custo da loja do
+    // valor ORIGINAL de proposito (o juros do cliente fica so informativo
+    // por la), entao nao serve pra medir o resultado do parcelamento aqui.
+    // Site nao tem esse conceito (sem parcelamento com juros real).
     const juros = round2(
-      vendasLoja.reduce((s, v) => s + ((v.valor_liquido ?? v.total ?? 0) - (v.total || 0)), 0)
+      vendasLoja.reduce((s, v) => {
+        const jurosCliente = (v.total_com_juros ?? v.total ?? 0) - (v.total || 0);
+        const custoLoja = v.custo_loja_total || 0;
+        return s + (jurosCliente - custoLoja);
+      }, 0)
     );
     const gastosTotal = round2(gastosMes.reduce((s, g) => s + (Number(g.valor) || 0), 0));
     const comissaoVendedores = round2(vendasLoja.reduce((s, v) => s + (v.comissao?.valor || 0), 0));

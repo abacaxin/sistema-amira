@@ -70,6 +70,12 @@ export function taxasDe(config, forma, parcelas) {
 /**
  * Calculo completo de um pagamento a partir do valor ORIGINAL (de tabela,
  * antes de qualquer juros) e das taxas {cliente, loja} dessa forma+parcelas.
+ *
+ * `valorLiquido` desconta o custo da loja do valor ORIGINAL, NAO do valor
+ * com juros do cliente — o juros cobrado do cliente e tratado como uma
+ * referencia informativa a parte (valorComJuros/total_com_juros), que nunca
+ * entra no "liquido". Ou seja, o juros do cliente nao compensa o custo da
+ * maquininha no liquido — os dois sao numeros independentes.
  * @returns {{pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela}}
  */
 export function infoParcela(valorOriginal, parcelas, taxas) {
@@ -77,7 +83,7 @@ export function infoParcela(valorOriginal, parcelas, taxas) {
   const pctLoja = Number(taxas?.loja || 0);
   const valorComJuros = round2(valorOriginal * (1 + pctCliente / 100));
   const custoLoja = round2(valorOriginal * (pctLoja / 100));
-  const valorLiquido = round2(valorComJuros - custoLoja);
+  const valorLiquido = round2(valorOriginal - custoLoja);
   const valorParcela = round2(valorComJuros / Math.max(1, Math.trunc(parcelas) || 1));
   return { pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela };
 }

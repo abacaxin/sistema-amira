@@ -127,13 +127,18 @@ async function renderBody() {
     caixa.valor_abertura + (porForma.dinheiro || 0) + suprimentos - sangrias
   );
 
-  // "Valor liquido do caixa": vendido bruto (o que o cliente efetivamente
-  // pagou, ja com juros de parcelamento) menos o custo da loja com
-  // maquininha/financiamento (ja embutido em v.valor_liquido, calculado no
-  // PDV) e menos os gastos lancados no periodo desta sessao. E um numero
-  // CONTABIL (nao mexe no "dinheiro esperado na gaveta" acima, que continua
-  // sendo so fisico) — por isso fica num card a parte, so pro admin.
-  const vendidoBruto = round2(vendas.reduce((s, v) => s + (v.total_com_juros ?? v.total ?? 0), 0));
+  // "Valor liquido do caixa": vendido de TABELA (valor original, sem juros
+  // do cliente) menos o custo da loja com maquininha/financiamento (ja
+  // embutido em v.valor_liquido, calculado no PDV) e menos os gastos
+  // lancados no periodo desta sessao. O juros cobrado do cliente no
+  // parcelamento fica DE FORA do liquido — e so uma referencia informativa
+  // (jurosClienteSessao), nao compensa o custo da maquininha aqui. E um
+  // numero CONTABIL (nao mexe no "dinheiro esperado na gaveta" acima, que
+  // continua sendo so fisico) — por isso fica num card a parte, so pro admin.
+  const vendidoBruto = round2(vendas.reduce((s, v) => s + (v.total || 0), 0));
+  const jurosClienteSessao = round2(
+    vendas.reduce((s, v) => s + ((v.total_com_juros ?? v.total ?? 0) - (v.total || 0)), 0)
+  );
   const custoLojaSessao = round2(vendas.reduce((s, v) => s + (v.custo_loja_total || 0), 0));
   const gastosSessaoTotal = round2(gastosSessao.reduce((s, g) => s + (Number(g.valor) || 0), 0));
   const valorLiquidoCaixa = round2(
@@ -169,11 +174,12 @@ async function renderBody() {
       ehAdm
         ? `<div class="card">
       <strong>Valor liquido do caixa</strong>
-      <p class="muted">Vendido bruto (com juros de parcelamento repassado ao cliente) menos custo de maquininha/financiamento e gastos lancados nesta sessao. Nao mexe no "dinheiro esperado na gaveta" acima, que continua sendo so o fisico.</p>
-      <div class="totais"><span>Vendido bruto</span><span>${brl(vendidoBruto)}</span></div>
+      <p class="muted">Vendido (valor de tabela, sem juros do cliente) menos custo de maquininha/financiamento e gastos lancados nesta sessao. Nao mexe no "dinheiro esperado na gaveta" acima, que continua sendo so o fisico.</p>
+      <div class="totais"><span>Vendido (valor de tabela)</span><span>${brl(vendidoBruto)}</span></div>
       <div class="totais"><span>Custo maquininha/financiamento</span><span>- ${brl(custoLojaSessao)}</span></div>
       <div class="totais"><span>Gastos da sessao</span><span>- ${brl(gastosSessaoTotal)}</span></div>
       <div class="totais big"><span>Valor liquido</span><span>${brl(valorLiquidoCaixa)}</span></div>
+      ${jurosClienteSessao ? `<p class="muted" style="margin-top:8px">Juros cobrados do cliente no parcelamento (informativo, ja fora do liquido acima): ${brl(jurosClienteSessao)}</p>` : ""}
     </div>`
         : ""
     }
@@ -204,7 +210,7 @@ async function renderBody() {
   document.getElementById("btn-fechar").onclick = () =>
     fechar(caixa, esperadoDinheiro, {
       porForma, totalVendas, sangrias, suprimentos,
-      valorLiquidoCaixa, custoLojaSessao, gastosSessaoTotal,
+      valorLiquidoCaixa, custoLojaSessao, gastosSessaoTotal, jurosClienteSessao,
     });
 }
 
@@ -293,6 +299,7 @@ function fechar(caixa, esperadoDinheiro, parcial) {
           valor_liquido_caixa: parcial.valorLiquidoCaixa,
           custo_loja_sessao: parcial.custoLojaSessao,
           gastos_sessao: parcial.gastosSessaoTotal,
+          juros_cliente_sessao: parcial.jurosClienteSessao,
         },
       });
       toast(`Caixa fechado. Diferenca: ${brl(diferenca)}`, diferenca === 0 ? "ok" : "warn");

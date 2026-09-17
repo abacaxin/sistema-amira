@@ -54,6 +54,7 @@ const vendasMes = (await getDocs(qMes)).docs
   .map((d) => d.data())
   .filter((v) => v.status === "concluida");
 const qtdMes = vendasMes.length;
+const totalMes = round2(vendasMes.reduce((s, v) => s + (v.total || 0), 0));
 const comissaoMes = vendasMes
   .filter((v) => v.canal === "loja")
   .reduce((s, v) => s + (v.comissao?.valor || 0), 0);
@@ -72,10 +73,11 @@ vendasHoje.forEach((v) =>
 const top = Object.values(prod).sort((a, b) => b.qtd - a.qtd).slice(0, 5);
 
 root.innerHTML = `
-  <div class="grid cols-5">
+  <div class="grid cols-6">
     <div class="card kpi"><div class="l">Vendas hoje</div><div class="n">${qtdHoje}</div></div>
     <div class="card kpi"><div class="l">Vendas no mes</div><div class="n">${qtdMes}</div></div>
     <div class="card kpi"><div class="l">Faturamento hoje</div><div class="n">${brl(totalHoje)}</div></div>
+    <div class="card kpi"><div class="l">Faturamento no mes</div><div class="n">${brl(totalMes)}</div></div>
     <div class="card kpi"><div class="l">Ticket medio</div><div class="n">${brl(ticket)}</div></div>
     <div class="card kpi"><div class="l">${ehAdm ? "Comissoes no mes" : "Minha comissao no mes"}</div><div class="n">${brl(comissaoMes)}</div></div>
   </div>

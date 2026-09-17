@@ -44,9 +44,11 @@ const caixaDoc = (await getDocs(query(
 const caixa = caixaDoc ? caixaDoc.data() : null;
 
 // ---- vendas do mes (todos os canais, igual "vendas hoje" — comissao
-// continua so canal loja) ----
+// continua so canal loja). Filtra so por `data` (sem `status` na query, que
+// exigiria um indice composto novo) e descarta os nao-concluidos em
+// memoria, igual "vendas hoje" ja faz.
 const qMes = ehAdm
-  ? query(collection(db, "vendas"), where("status", "==", "concluida"), where("data", ">=", m0))
+  ? query(collection(db, "vendas"), where("data", ">=", m0))
   : query(collection(db, "vendas"), where("vendedor_uid", "==", perfil.id), where("data", ">=", m0));
 const vendasMes = (await getDocs(qMes)).docs
   .map((d) => d.data())

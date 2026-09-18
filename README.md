@@ -224,7 +224,10 @@ Colecoes **do sistema**:
   cliente e so uma referencia informativa, nunca compensa o custo da maquininha nesse campo. Quem
   quiser o resultado financeiro do parcelamento (juros do cliente menos custo da loja) calcula
   na mao a partir dos campos brutos — e o que o Painel faz na linha "Juros" da contabilidade
-  mensal (ver abaixo).
+  mensal (ver abaixo). No espelho do site (`canal:"site"`), `pagamentos[0]` so tem
+  `forma, valor` e, se o pedido foi pago parcelado no Mercado Pago, `parcelas` (copiado de
+  `pedidos/{id}.pagamento.parcelas`) — sem `valor_parcela`/`juros_pct`/`custo_loja`, porque o
+  site nao calcula juros de parcelamento (isso e o Mercado Pago quem faz).
 - `gastos/{id}`: despesa avulsa da loja, solta por data (nao amarrada a uma sessao de caixa).
   `descricao, categoria (texto livre, opcional), valor, data (Timestamp editavel), observacoes,
   criado_em, criado_por_uid, criado_por_nome`. Leitura pra qualquer staff; criar/editar/excluir
@@ -257,8 +260,12 @@ Colecoes **do site** que o sistema consome:
   iPhone = opcao cujo slug comeca com "iphone").
 - `pedidos/{id}`: pedido do site, criado pelo cliente. **Sem valores monetarios.**
   `uidComprador, itens: [{produtoId, quantidade, modo}], temItemAtacado, modoEntrega
-  ("entrega"|"retirada"), endereco | null, status, pagamento{ metodo, status }, criadoEm`
-  + opcionais `ref` (codigo do indicador) e `refEm`. Totais sao **derivados** do catalogo.
+  ("entrega"|"retirada"), endereco | null, status, pagamento{ metodo, status, parcelas },
+  criadoEm` + opcionais `ref` (codigo do indicador) e `refEm`. Totais sao **derivados** do
+  catalogo. `pagamento.parcelas` e escrito pelo backend do site (webhook do Mercado Pago)
+  quando o metodo e `mercadopago` — quantidade de parcelas escolhida pelo cliente no
+  Checkout Pro; o site nao calcula nem guarda o valor de cada parcela (isso e o Mercado
+  Pago que mostra na tela dele), so a quantidade.
 
 ---
 

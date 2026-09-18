@@ -211,6 +211,7 @@ function detalhe(p, statusSugerido) {
     <p class="muted">Codigo de retirada: <code>${codigoRetirada(p.id)}</code> &middot; <span title="${escapeHtml(p.id)}">id ${escapeHtml(p.id.slice(0, 8))}…</span></p>
     <p class="muted">${fmtData(p.criadoEm)} &middot; ${p.modoEntrega === "entrega" ? "Entrega" : "Retirada"} &middot;
       pagamento ${escapeHtml(p.pagamento?.metodo || "-")} (${escapeHtml(p.pagamento?.status || "-")})
+      ${p.pagamento?.parcelas > 1 ? `&middot; ${p.pagamento.parcelas}x` : ""}
       ${p.ref ? `&middot; indicador <code>${escapeHtml(String(p.ref))}</code>` : ""}</p>
 
     <strong>Comprador</strong>
@@ -345,7 +346,18 @@ async function mudarStatus(pedido, novoStatus) {
           subtotal,
           desconto: 0,
           total: subtotal,
-          pagamentos: ped.pagamento?.metodo ? [{ forma: ped.pagamento.metodo, valor: subtotal }] : [],
+          // Parcelas escolhidas pelo cliente no Checkout Pro do Mercado Pago
+          // (pedido.pagamento.parcelas, gravado pelo webhook do site) — so
+          // a contagem, sem valor_parcela: o site nao calcula/guarda juros
+          // do parcelamento (isso e feito pelo MP na tela dele), entao nao
+          // da pra saber o valor real de cada parcela pra inventar um numero.
+          pagamentos: ped.pagamento?.metodo
+            ? [{
+                forma: ped.pagamento.metodo,
+                valor: subtotal,
+                ...(ped.pagamento.parcelas > 1 ? { parcelas: ped.pagamento.parcelas } : {}),
+              }]
+            : [],
           status: "concluida",
         });
       }

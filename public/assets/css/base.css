@@ -159,3 +159,20 @@ tbody tr:hover { background: #f9f2f1; }
   .cart-line { flex-wrap: wrap; row-gap: 6px; }
   .cart-line .nm { flex: 1 1 100%; }
 }
+
+/* ── Maquininha Point (PDV) ─────────────────────────────────────────── */
+.pt-box { text-align: center; padding: 6px 0 2px; }
+.pt-valor { font-size: 20px; font-weight: 700; color: var(--plum); }
+.pt-spin {
+  width: 30px; height: 30px; margin: 14px auto 8px;
+  border: 3px solid var(--line); border-top-color: var(--plum); border-radius: 50%;
+  animation: pt-giro .9s linear infinite;
+}
+.pt-status { font-size: 15px; margin: 6px 0 2px; }
+.pt-erro { color: var(--err); font-weight: 600; }
+@keyframes pt-giro { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pt-spin { animation: none; } }
+
+.pt-linha { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 13px; }
+.pt-ok { color: var(--ok); font-weight: 600; }
+.pt-pend { color: var(--warn); font-weight: 600; }

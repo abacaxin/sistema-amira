@@ -10,7 +10,10 @@ site proprio, Mercado Livre, Shopee e conciliacao com o Mercado Pago.
 importacao de catalogo, relatorios e backup.
 
 Roda **100% no plano gratuito (Spark)** do Firebase. **Nenhuma Cloud Function.** Toda
-automacao e script Python + GitHub Actions (cron).
+automacao e script Python + GitHub Actions (cron). A unica parte com backend e a
+integracao **opcional** da maquininha Mercado Pago Point (secao 10): funcoes serverless na
+**Vercel** (`api/`), fora do Firebase. Desligada por padrao — sem ela o sistema funciona
+exatamente como antes.
 
 ---
 
@@ -46,6 +49,7 @@ Desde 2026-09 o sistema **compartilha o projeto Firebase do site** (`flora-5754a
 | Indicadores (`indicadores`) | **so admin** | CRUD de indicadores (`nome, codigo, contato, ativo, anotacoes`), copia do link `?ref=`, e **apuracao por periodo venda por venda** (sem resumo agregado — o resumo fica no "Perfil" de cada indicador): le `pedidos` com `ref`, deriva a base elegivel do catalogo atual (`camadas` + `produtos`), exclui iPhone, aplica o percentual. Pagamento manual. |
 | Usuarios (`usuarios`) | **so admin** | Cria vendedor **sem deslogar o admin** (instancia secundaria do Firebase App so para o `createUserWithEmailAndPassword`; o doc `usuarios/{uid}` e gravado pela instancia primaria). Define `%`/base de comissao, ativa/inativa. |
 | Configuracoes (`config`) | **so admin** | `configuracoes/sistema` (nome da loja, CNPJ, formas de pagamento, tabela de juros por forma, base + `%` padrao de comissao) e `configuracoes/indicadores` (`site_url`, `percentual`, `janela_dias`, `categorias_excluidas[]`). |
+| Maquininha (Point) | admin + vendedor (config: admin) | **Opcional, em teste.** Credito/debito cobrados direto na maquininha Mercado Pago Point pelo PDV, com a taxa REAL de cada venda. Ver secao 10. |
 | Backup | — | GitHub Action diaria exporta o Firestore para JSON (artefato de 30 dias). |
 
 ### Estado (2026-09)
@@ -159,8 +163,16 @@ python scripts/backfill_juros_historico.py --aplicar
 python scripts/backfill_parcelas_pedidos_site.py
 python scripts/backfill_parcelas_pedidos_site.py --aplicar
 
+# conciliacao da maquininha (so leitura): cobranca aprovada sem venda, pendencias
+# travadas, estornos em venda concluida, taxa real x estimada
+python scripts/conciliar_point.py
+python scripts/conciliar_point.py --desde 2026-09-01
+
 # servidor estatico local para abrir o front sem deploy
 python scripts/dev_server.py
+
+# testes da API da maquininha (Node 22+, sem rede nem credencial)
+npm install && npm test
 ```
 
 ### Backup automatico (GitHub Actions)
@@ -189,7 +201,16 @@ public/                       front-end (deploy no Hosting, target "interno")
     produtos-schema.js        helpers portados do site (infoPreco, estoquePorModo,
                               slugEhIphone, baseElegivelIndicador, ...)
     camadas.js                servico de camadas (filtros do catalogo)
+    juros.js                  juros de parcelamento (tabela cliente/loja, infoParcela)
+    point.js                  maquininha: cliente da API, polling, mapeamento pra venda (puro)
+    point-ui.js               maquininha: modal de cobranca
     pages/*.js                logica de cada tela
+api/                          funcoes serverless (Vercel) — SO a maquininha Point
+  point/*.js, webhook-point.js  rotas (finas; a logica esta em _lib/point-handlers.js)
+  _lib/                       Firestore Admin, cliente Mercado Pago, regras puras, auth, CORS
+tests/                        testes da API e do cliente da maquininha (node --test)
+package.json, vercel.json     dependencias e build das funcoes (Vercel)
+.env.example                  variaveis de ambiente da API (na Vercel; nunca commitar valores)
 scripts/                      ferramentas Python (firebase-admin)
 firestore.rules               CANONICO (site + sistema)
 firestore.indexes.json        CANONICO
@@ -243,6 +264,21 @@ Colecoes **do sistema**:
   menos custo de maquininha menos gastos do periodo) **a parte** do "dinheiro esperado na
   gaveta" (que continua so o calculo fisico de dinheiro, sem desconto nenhum);
   `juros_cliente_sessao` e so informativo, ja fora desse liquido.
+- `configuracoes/sistema.point`: `{ ativo, obrigatorio, api_url }` — liga a maquininha no PDV,
+  exige que credito/debito passem por ela, e onde esta a API (vazio = mesmo dominio).
+- `cobrancas_point/{cobrancaId}`: uma cobranca na maquininha. **So o backend (Admin SDK) le e
+  escreve** — cai no catch-all das rules, o navegador nao enxerga. `cobrancaId` (`pdv-<uuid>`)
+  e o id do documento, a `external_reference` da order no MP e a chave de idempotencia.
+  Campos: `status` (`criando|created|at_terminal|processed|failed|canceled|expired|refunded|erro`),
+  `tipo`, `valor`, `parcelas_solicitadas`, `parcelas` (o que a maquininha reportou),
+  `bandeira`, `valor_pago`, `custo_loja`, `liquido_mp`, `taxa_origem`, `order_id`,
+  `payment_id`, `vendedor_uid`, `mp_raw` (ultima resposta crua do MP — pra depurar; pode sair
+  depois da validacao).
+- Venda paga na maquininha: `vendas.pagamentos[i]` ganha `point{cobranca_id, order_id,
+  payment_id, bandeira, tipo, status}` e `origem_taxa` (`"maquininha"` = custo real informado
+  pelo MP; `"estimada"` = o MP nao informou e usamos a tabela de juros). Os demais campos
+  (`valor`, `valor_com_juros`, `custo_loja`, `valor_liquido`, `parcelas`...) tem o mesmo
+  significado de sempre, so que com numeros reais.
 - `contadores/vendas`: `ultimo_numero` (numeracao sequencial das vendas da loja).
 - `comissoes/{AAAA-MM}/vendedores/{uid}`: consolidado do periodo.
 - `integracoes/{canal}`: tokens de marketplace (Fase 3+; `read, write: if false` — so
@@ -287,3 +323,100 @@ Colecoes **do site** que o sistema consome:
   das fases 3/4.
 - **Deploy de `firestore.rules`/`firestore.indexes.json` so a partir deste repo.**
   Publicar a copia do repo do site sobrescreve o que o sistema precisa.
+- A API da maquininha (`api/`) usa o **Admin SDK, que ignora as rules**: por isso ela mesma
+  confere quem chama (ID token do Firebase + papel lido de `usuarios/{uid}`, igual `ehStaff`/
+  `ehAdmin`), limita rajadas por usuario e so o admin estorna/troca o modo do terminal. O
+  `MP_ACCESS_TOKEN` e a service account vivem so nas variaveis da Vercel — nunca no front.
+
+---
+
+## 10. Maquininha Mercado Pago Point (opcional, em teste)
+
+Cobra credito e debito **direto na maquininha pelo PDV** e grava a taxa real de cada venda
+(em vez da estimativa da tabela de juros). Usa a **Orders API do Point**. Desligada por
+padrao (Configuracoes → Maquininha); com ela desligada nada muda.
+
+### Como funciona
+
+```
+PDV ── /api/point/cobrar ──▶ API (Vercel) ── POST /v1/orders ──▶ Mercado Pago ──▶ maquininha
+ ▲                              │  grava cobrancas_point/{id}                        │ cliente passa o cartao
+ └── /api/point/status ◀────────┘◀── GET /v1/orders/{id} (a cada consulta) ◀─────────┘
+                                 ◀── /api/webhook-point (rede de seguranca)
+```
+
+- O PDV consulta `/status` a cada ~2,5 s enquanto o modal esta aberto. **Cada consulta busca o
+  estado direto no MP**, entao o fluxo funciona mesmo sem o webhook configurado; o webhook so
+  cobre a cobranca aprovada que ninguem esta mais acompanhando (aba fechada).
+- O estado so avanca (`created → at_terminal → processed…`): resposta atrasada nunca desfaz
+  uma aprovacao. Repetir `/cobrar` com o mesmo id nao cria outra order.
+- Na venda ficam os numeros que a maquininha reportou: parcelas (o cliente pode trocar por la),
+  valor cobrado, custo da loja. `valor` continua sendo o valor de tabela (base de comissao) e
+  `valor_liquido = valor − custo_loja`, a mesma regra de antes.
+- **Quem paga o juros** segue a tabela de juros que ja existe: cliente com juros > 0 no numero de
+  parcelas = `buyer` (o cliente paga); senao `seller` (a loja absorve). Quem define as taxas
+  reais e o contrato do Mercado Pago, nao a tabela.
+
+### Rotas (`api/`)
+
+| Rota | Quem | O que faz |
+|---|---|---|
+| `POST /api/point/cobrar` | equipe | cria a order na maquininha `{cobrancaId, tipo, valor, parcelas, quemPagaJuros}` |
+| `GET /api/point/status?cobrancaId=` | dono da cobranca ou admin | atualiza no MP e devolve o estado |
+| `POST /api/point/cancelar` | dono ou admin | cancela a cobranca pendente |
+| `POST /api/point/estornar` | **admin** | estorno total (ate 90 dias) |
+| `GET/POST /api/point/terminais` | **admin** | lista terminais / troca modo `PDV` ↔ `STANDALONE` |
+| `POST /api/webhook-point` | Mercado Pago | topico `orders`; valida `x-signature` |
+
+### Colocar no ar (passo a passo)
+
+1. **Mercado Pago**: crie a **loja** e o **caixa** no painel, vincule a maquininha pelo app do
+   MP (QR Code no terminal) e crie uma aplicacao em *Suas integrações*. Modelos aceitos pela
+   Orders API: Point Smart 1/2 e Point Pro 2/3. Um terminal em modo PDV por caixa.
+2. **Vercel**: novo projeto apontando pra ESTE repo (Root Directory = raiz, sem framework;
+   `vercel.json` ja aponta `public/` como saida). Variaveis (ver `.env.example`):
+   `MP_ACCESS_TOKEN`, `MP_POINT_TERMINAL_ID`, `FIREBASE_SERVICE_ACCOUNT` (do projeto
+   `flora-5754a`), `MP_WEBHOOK_SECRET` (opcional no comeco), `CORS_ORIGINS` (se o front ficar em
+   outro dominio). Sem o id do terminal ainda? Deixe vazio, faca o passo 3 e volte.
+3. **Achar o terminal**: em Configuracoes → Maquininha informe a URL da API e clique **Testar
+   conexao**. O sistema lista os terminais da conta (com o id no formato `TIPO__SERIAL`) e o modo
+   de cada um. Copie o id pra `MP_POINT_TERMINAL_ID`, redeploy, e use **Colocar em modo PDV**.
+4. **Webhook** (recomendado): *Suas integrações → Webhooks*, topico **Order (Mercado Pago)**, URL
+   `https://<sua-api>/api/webhook-point`; copie a assinatura secreta pra `MP_WEBHOOK_SECRET`.
+5. Em Configuracoes marque **Usar a maquininha no PDV**. So depois de validar tudo, marque
+   **Exigir a maquininha** (bloqueia registrar cartao "na mao").
+
+Front no Firebase Hosting + API na Vercel (cross-origin) funciona: preencha a URL da API e, se
+preciso, `CORS_ORIGINS`. Se preferir tudo na Vercel (mesma origem), deixe a URL vazia e
+adicione o dominio da Vercel em *Firebase Auth → Authorized domains*.
+
+### Plano B (internet ou sistema fora do ar)
+
+Em modo PDV a maquininha **so aceita cobranca vinda do sistema**. Se cair, va em Configuracoes →
+Maquininha → **Voltar ao modo autonomo** (ou troque o modo pelo app do MP) e cobre como uma
+maquininha comum; registre o cartao manualmente no PDV (desmarque *Exigir a maquininha* antes).
+
+### Teste recomendado (primeira vez)
+
+Com dinheiro de verdade, valor pequeno: cobrar **R$ 1,00 no debito**, aprovar, conferir a venda
+(`origem_taxa` e `custo_loja`), e **estornar** (Vendas → cancelar a venda estorna no cartao).
+Depois **credito 3x** e olhe `cobrancas_point/{id}.mp_raw` / `mp_pagamento_raw` no Firestore.
+
+### O que ainda precisa ser confirmado no primeiro teste real
+
+- O nome do campo de quem paga o juros: a doc do MP usa `installments_cost` numa pagina e
+  `default_installments_cost` em outra (constante `CAMPO_QUEM_PAGA_JUROS` em `api/_lib/point.js`).
+- De onde vem a **taxa real**: o codigo tenta o pagamento na API classica
+  (`/v1/payments/{reference_id}` → `net_received_amount`/`fee_details`). Se a order nao trouxer
+  esse id, a taxa cai em `origem_taxa: "estimada"` — o `mp_raw` mostra o formato verdadeiro.
+- Cancelar uma cobranca que ja esta na maquininha (`at_terminal`) pela API: a doc e ambigua. Se o
+  MP recusar, o sistema orienta cancelar pela propria maquininha.
+
+### Operacao
+
+- `python scripts/conciliar_point.py` lista **cobranca aprovada sem venda** (cliente pagou, ninguem
+  registrou), pendencias travadas e estornos ligados a venda concluida. Rode de vez em quando.
+- Fechar o modal com a cobranca viva deixa **Acompanhar** na linha. Recarregar a aba com
+  cobranca no carrinho pede confirmacao (perder o vinculo gera o caso acima).
+- Cancelar uma venda paga na maquininha estorna no cartao antes; se o estorno falhar a venda
+  **nao** e cancelada.

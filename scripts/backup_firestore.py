@@ -16,6 +16,7 @@ COLECOES = [
     "usuarios", "produtos", "camadas", "configuracoes", "carrinhos",
     "pedidos", "metricas", "indicadores",
     "vendas", "caixa", "contadores", "comissoes", "gastos",
+    "cobrancas_point",
 ]
 
 

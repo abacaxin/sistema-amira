@@ -166,7 +166,15 @@ function detalhe(v) {
     <div class="totais"><span>Desconto</span><span>- ${brl(v.desconto || 0)}</span></div>
     <div class="totais big"><span>Total</span><span>${brl(v.total)}</span></div>
     ${(v.pagamentos || [])
-      .map((p) => `<div class="totais"><span>${p.forma}${p.parcelas > 1 ? ` (${p.parcelas}x de ${brl(p.valor_parcela)}${p.juros_pct ? `, ${p.juros_pct}% juros` : ""})` : ""}</span><span>${brl(p.valor)}</span></div>`)
+      .map((p) => {
+        // Venda de loja sabe o valor de cada parcela (valor_parcela, PDV);
+        // venda do site so sabe a quantidade (o Mercado Pago calcula o
+        // parcelamento na tela dele, sem o sistema saber o valor exato).
+        const detalhe = p.parcelas > 1
+          ? ` (${p.parcelas}x${p.valor_parcela != null ? ` de ${brl(p.valor_parcela)}` : ""}${p.juros_pct ? `, ${p.juros_pct}% juros` : ""})`
+          : "";
+        return `<div class="totais"><span>${p.forma}${detalhe}</span><span>${brl(p.valor)}</span></div>`;
+      })
       .join("")}
     ${
       v.comissao

@@ -21,6 +21,11 @@ export const CONFIG_SISTEMA_PADRAO = {
   // da maquininha) sobre o valor original. Chave ausente = sem juros/custo.
   // Ver public/assets/js/juros.js (infoParcela) e a UI em pages/config.js.
   parcelamento: { maximo: 12, minimo_parcela: 0, juros: { credito: {}, crediario: {}, debito: {} } },
+  // Maquininha Mercado Pago Point (Configuracoes → Maquininha): `ativo` liga
+  // o botao "Cobrar na maquininha" no PDV; `obrigatorio` bloqueia registrar
+  // credito/debito sem passar por ela; `api_url` e a API na Vercel (vazio =
+  // mesmo dominio do sistema). Ver public/assets/js/point.js.
+  point: { ativo: false, obrigatorio: false, api_url: "" },
 };
 
 export const CONFIG_INDICADORES_PADRAO = {

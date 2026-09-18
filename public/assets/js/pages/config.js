@@ -1,8 +1,10 @@
 import { requireAuth } from "../auth.js";
 import { initShell, toast, escapeHtml } from "../ui.js";
+import { auth } from "../firebase.js";
 import { db, doc, getDoc, setDoc, updateDoc, serverTimestamp } from "../db.js";
 import { parseNum } from "../money.js";
 import { FORMAS_JUROS } from "../juros.js";
+import { criarClientePoint } from "../point.js";
 
 const BASES = ["total", "total_sem_desconto", "margem"];
 const FORMA_LABEL = { credito: "Crédito", crediario: "Crediário", debito: "Débito" };
@@ -17,6 +19,7 @@ const [snapSis, snapInd] = await Promise.all([
 const cfg = snapSis.exists() ? snapSis.data() : {};
 const com = cfg.comissao || {};
 const parc = cfg.parcelamento || {};
+const point = cfg.point || {};
 const ind = snapInd.exists() ? snapInd.data() : {};
 
 root.innerHTML = `
@@ -67,6 +70,20 @@ root.innerHTML = `
     <div class="juros-linhas" id="juros-linhas-debito"></div>
 
     <button class="btn" id="salvar-parc" style="margin-top:16px">Salvar parcelamento</button>
+  </div>
+
+  <div class="card">
+    <strong>Maquininha (Mercado Pago Point)</strong>
+    <p class="muted">Cobra crédito e débito direto na maquininha pelo PDV e traz a taxa real de cada venda. Precisa da API (Vercel) no ar e da maquininha em modo PDV — passo a passo no README, seção "Maquininha Mercado Pago Point".</p>
+    <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-ativo" ${point.ativo === true ? "checked" : ""} style="width:auto"> Usar a maquininha no PDV (botão "Cobrar na maquininha")</label>
+    <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-obrigatorio" ${point.obrigatorio === true ? "checked" : ""} style="width:auto"> Exigir a maquininha em crédito e débito (não deixa registrar cartão manualmente)</label>
+    <label>URL da API (deixe vazio se a API estiver no mesmo domínio do sistema)</label>
+    <input id="point-api" value="${escapeHtml(point.api_url ?? "")}" placeholder="https://sistema-amira-api.vercel.app">
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><button class="btn" id="salvar-point">Salvar maquininha</button></div>
+      <div style="flex:0 0 auto"><button class="btn ghost" id="testar-point">Testar conexão</button></div>
+    </div>
+    <div id="point-terminais" style="margin-top:12px"></div>
   </div>
 
   <div class="card">
@@ -216,6 +233,76 @@ document.getElementById("salvar-parc").onclick = async () => {
   }
   toast("Parcelamento salvo.", "ok");
 };
+
+// ── Maquininha Point ─────────────────────────────────────────────────────
+document.getElementById("salvar-point").onclick = async () => {
+  const dados = {
+    ativo: document.getElementById("point-ativo").checked,
+    obrigatorio: document.getElementById("point-obrigatorio").checked,
+    api_url: document.getElementById("point-api").value.trim().replace(/\/+$/, ""),
+  };
+  // merge recursivo do Firestore e ok aqui: sao so 3 escalares dentro de `point`
+  await setDoc(doc(db, "configuracoes", "sistema"), { point: dados, atualizadoEm: serverTimestamp() }, { merge: true });
+  toast("Maquininha salva.", "ok");
+};
+
+// Testa com a URL que esta no campo (nao a salva) — da pra conferir antes de gravar.
+function clientePointDaTela() {
+  return criarClientePoint({
+    apiBase: document.getElementById("point-api").value.trim(),
+    obterToken: () => auth.currentUser.getIdToken(),
+  });
+}
+
+async function listarTerminais() {
+  const box = document.getElementById("point-terminais");
+  box.innerHTML = `<p class="muted">Consultando o Mercado Pago…</p>`;
+  try {
+    const r = await clientePointDaTela().terminais();
+    if (!r.terminais.length) {
+      box.innerHTML = `<p class="muted">Conexão ok, mas o Mercado Pago não listou nenhum terminal nessa conta. Vincule a maquininha pelo app do Mercado Pago (loja + caixa) e tente de novo.</p>`;
+      return;
+    }
+    box.innerHTML = `
+      <p class="muted">${
+        r.configurado
+          ? `Terminal configurado no servidor (<code>MP_POINT_TERMINAL_ID</code>): <code>${escapeHtml(r.configurado)}</code>`
+          : `O servidor ainda não tem <code>MP_POINT_TERMINAL_ID</code> — copie o id do terminal abaixo pra variável na Vercel.`
+      }</p>
+      <div class="tabela-wrap"><table>
+        <thead><tr><th>Terminal</th><th>Modo</th><th></th></tr></thead>
+        <tbody>${r.terminais
+          .map((t) => `<tr>
+            <td><code>${escapeHtml(t.id)}</code>${t.selecionado ? ` <span class="tag ativo">em uso</span>` : ""}${t.caixa_externo ? `<div class="muted">caixa ${escapeHtml(String(t.caixa_externo))}</div>` : ""}</td>
+            <td>${t.modo === "PDV" ? `<span class="tag ativo">PDV</span>` : `<span class="tag sem_estoque">${escapeHtml(t.modo || "?")}</span>`}</td>
+            <td class="right">${
+              t.modo === "PDV"
+                ? `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="STANDALONE">Voltar ao modo autônomo</button>`
+                : `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="PDV">Colocar em modo PDV</button>`
+            }</td>
+          </tr>`)
+          .join("")}</tbody>
+      </table></div>
+      <p class="muted" style="margin-top:8px">Modo PDV: a maquininha espera as cobranças do sistema. Modo autônomo: funciona sozinha, como uma maquininha comum (use se o sistema ou a internet cair).</p>`;
+    box.querySelectorAll(".pt-modo").forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          await clientePointDaTela().definirModo(b.dataset.id, b.dataset.modo);
+          toast(b.dataset.modo === "PDV" ? "Maquininha em modo PDV." : "Maquininha em modo autônomo.", "ok");
+          listarTerminais();
+        } catch (e) {
+          b.disabled = false;
+          toast(e?.message || "Não foi possível trocar o modo.", "err");
+        }
+      };
+    });
+  } catch (e) {
+    box.innerHTML = `<p style="color:var(--err)">${escapeHtml(e?.message || "Falha ao consultar.")}</p>
+      <p class="muted">Confira a URL da API, se ela está no ar e se as variáveis (<code>MP_ACCESS_TOKEN</code>, <code>FIREBASE_SERVICE_ACCOUNT</code>) estão na Vercel.</p>`;
+  }
+}
+document.getElementById("testar-point").onclick = listarTerminais;
 
 document.getElementById("salvar-ind").onclick = async () => {
   await setDoc(

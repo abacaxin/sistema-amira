@@ -1,5 +1,6 @@
 import { requireAuth } from "../auth.js";
-import { initShell, toast, escapeHtml, erroCard } from "../ui.js";
+import { auth } from "../firebase.js";
+import { initShell, toast, confirmar, escapeHtml, erroCard } from "../ui.js";
 import {
   db, collection, getDocs, query, where,
   doc, runTransaction, serverTimestamp, getConfigSistema,
@@ -8,6 +9,8 @@ import { brl, round2, parseNum } from "../money.js";
 import { calcularComissao } from "../regras.js";
 import { infoPreco, estoquePorModo } from "../produtos-schema.js";
 import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela } from "../juros.js";
+import { TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha } from "../point.js";
+import { cobrarNaMaquininha } from "../point-ui.js";
 
 const { perfil } = await requireAuth();
 const root = initShell({ perfil, active: "pdv" });
@@ -19,6 +22,16 @@ const formas = config.formas_pagamento?.length
   ? config.formas_pagamento
   : ["dinheiro", "pix", "debito", "credito", "crediario"];
 const parc = config.parcelamento || { maximo: 12, minimo_parcela: 0, juros: {} };
+
+// Maquininha Mercado Pago Point (opcional — Configuracoes → Maquininha). Com
+// ela ligada, credito/debito ganham o botao "Cobrar na maquininha"; sem ela
+// (ou com a API fora do ar) o registro manual de cartao continua igual.
+const pointCfg = config.point || {};
+const pointAtivo = pointCfg.ativo === true;
+const pointObrigatorio = pointAtivo && pointCfg.obrigatorio === true;
+const clientePoint = pointAtivo
+  ? criarClientePoint({ apiBase: pointCfg.api_url || "", obterToken: () => auth.currentUser.getIdToken() })
+  : null;
 
 // Caixa e UNICO pra loja toda — nao e "do usuario logado". Qualquer
 // vendedor/admin vende contra o mesmo caixa aberto, seja quem for que
@@ -97,6 +110,16 @@ renderResultados();
 renderCart();
 renderPags();
 renderTotais();
+
+// Recarregar/fechar a aba com cobranca na maquininha em curso (ou ja
+// aprovada e ainda sem venda) perderia o vinculo: o cliente pagou, o
+// sistema nao sabe. O navegador pergunta antes.
+window.addEventListener("beforeunload", (e) => {
+  if (pagamentos.some((p) => p.point)) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
 
 function renderResultados() {
   const termo = $("#busca-prod").value.toLowerCase().trim();
@@ -199,14 +222,21 @@ function renderPags() {
   $("#pags").innerHTML = pagamentos
     .map((pg, i) => {
       const parcelavel = FORMAS_PARCELAVEIS.has(pg.forma);
+      // Com cobranca na maquininha criada (em andamento ou aprovada) a linha
+      // fica travada: forma, valor e parcelas ja foram pra maquininha e o
+      // que vale agora e o que ela reportar.
+      const pt = pg.point;
+      const travado = pt ? "disabled" : "";
       let linhaParcelas = "";
       if (parcelavel) {
-        const opcoes = parcelasDisponiveis(pg.valor, parc);
+        // Linha travada nao recalcula as opcoes: as parcelas podem ter sido
+        // trocadas pelo cliente na maquininha e nao podem ser "corrigidas".
+        const opcoes = pt ? [pg.parcelas || 1] : parcelasDisponiveis(pg.valor, parc);
         const numParcelas = opcoes.includes(pg.parcelas) ? pg.parcelas : 1;
-        pg.parcelas = numParcelas;
+        if (!pt) pg.parcelas = numParcelas;
         linhaParcelas = `
           <div class="cart-line">
-            <select data-i="${i}" class="pp">
+            <select data-i="${i}" class="pp" ${travado}>
               ${opcoes
                 .map((n) => {
                   const j = taxasDe(config, pg.forma, n).cliente;
@@ -222,7 +252,9 @@ function renderPags() {
       // mas pode ter taxa a vista configurada em "1". Sem isso o vendedor nao
       // tinha como ver o custo da loja antes de finalizar a venda.
       let linhaTaxa = "";
-      if (FORMAS_JUROS.includes(pg.forma)) {
+      // Com cobranca na maquininha o que vale sao os numeros dela (linha
+      // "Cobrado na maquininha"), nao a estimativa da tabela.
+      if (!pt && FORMAS_JUROS.includes(pg.forma)) {
         const { pctCliente, pctLoja, valorComJuros, custoLoja, valorParcela, parcelas } = infoPagamento(pg);
         const partes = pctCliente || pctLoja
           ? [
@@ -233,13 +265,33 @@ function renderPags() {
           : [`sem taxa configurada pra ${pg.forma}${parcelavel ? ` em ${pg.parcelas}x` : ""} — ajuste em Configuracoes`];
         linhaTaxa = `<p class="muted" style="margin:2px 0 8px;font-size:12px">${partes.join(" &middot; ")}</p>`;
       }
+      // Botao/estado da maquininha (so credito e debito, e so com Point ligado).
+      let linhaPoint = "";
+      if (clientePoint && TIPO_POINT[pg.forma]) {
+        if (pt && pt.status === "processed") {
+          linhaPoint = `<div class="pt-linha">
+            <span class="pt-ok">Cobrado na maquininha</span>
+            <span class="muted">${escapeHtml(descricaoAprovada(pg))}</span>
+            ${perfil.role === "admin" ? `<button class="btn ghost pt-estornar" data-i="${i}">Estornar</button>` : ""}
+          </div>`;
+        } else if (pt) {
+          linhaPoint = `<div class="pt-linha">
+            <span class="pt-pend">Cobranca em andamento na maquininha</span>
+            <button class="btn ghost pt-acompanhar" data-i="${i}">Acompanhar</button>
+          </div>`;
+        } else {
+          linhaPoint = `<div class="pt-linha">
+            <button class="btn sec pt-cobrar" data-i="${i}" ${pg.valor > 0 ? "" : "disabled"}>Cobrar na maquininha</button>
+          </div>`;
+        }
+      }
       return `<div class="cart-line">
-        <select data-i="${i}" class="pf">${formas
+        <select data-i="${i}" class="pf" ${travado}>${formas
           .map((f) => `<option ${f === pg.forma ? "selected" : ""}>${f}</option>`)
           .join("")}</select>
-        <input class="pv" data-i="${i}" value="${pg.valor}" inputmode="decimal" style="width:120px">
-        <button class="btn ghost prm" data-i="${i}">&times;</button>
-      </div>${linhaParcelas}${linhaTaxa}`;
+        <input class="pv" data-i="${i}" value="${pg.valor}" inputmode="decimal" style="width:120px" ${travado}>
+        <button class="btn ghost prm" data-i="${i}" ${travado}>&times;</button>
+      </div>${linhaParcelas}${linhaPoint}${linhaTaxa}`;
     })
     .join("");
   $("#pags")
@@ -283,6 +335,96 @@ function renderPags() {
         renderTotais();
       };
     });
+  $("#pags").querySelectorAll(".pt-cobrar").forEach((b) => (b.onclick = () => cobrarLinha(pagamentos[+b.dataset.i])));
+  $("#pags").querySelectorAll(".pt-acompanhar").forEach((b) => (b.onclick = () => acompanharLinha(pagamentos[+b.dataset.i])));
+  $("#pags").querySelectorAll(".pt-estornar").forEach((b) => (b.onclick = () => estornarLinha(pagamentos[+b.dataset.i])));
+}
+
+// ── Cobranca na maquininha (Mercado Pago Point) ──────────────────────────
+function descricaoAprovada(pg) {
+  const pt = pg.point;
+  const partes = [];
+  if (pt.bandeira) partes.push(pt.bandeira);
+  partes.push(FORMAS_PARCELAVEIS.has(pg.forma) && pg.parcelas > 1 ? `${pg.parcelas}x` : "a vista");
+  if (pt.valor_pago != null) partes.push(`${brl(pt.valor_pago)} cobrado`);
+  if (pt.custo_loja != null) partes.push(`taxa ${brl(pt.custo_loja)}`);
+  return partes.join(" · ");
+}
+
+function resumoCobranca(pg, parcelas) {
+  return `${brl(pg.valor)} · ${pg.forma}${parcelas > 1 ? ` em ${parcelas}x` : ""}`;
+}
+
+// A linha e um objeto (nao um indice): enquanto o modal esta aberto a tela
+// fica bloqueada, mas o objeto continua valendo mesmo se a lista mudar.
+function aplicarResultadoPoint(pg, r) {
+  if (!pagamentos.includes(pg)) return;
+  if (r.resultado === "aprovada") {
+    marcarAprovada(pg, r.cobranca);
+    toast("Pagamento aprovado na maquininha.", "ok");
+  } else if (r.resultado === "pendente") {
+    // Modal fechado com a cobranca ainda viva: a linha continua travada.
+    toast("A cobranca segue na maquininha. Use \"Acompanhar\" na linha do pagamento.", "warn");
+  } else {
+    delete pg.point; // nada foi cobrado: destrava a linha
+    if (r.resultado === "falhou") toast(r.erro?.message || "Nao foi possivel cobrar na maquininha.", "err");
+    else if (r.resultado === "inexistente") toast("A cobranca nao chegou a ser criada. Tente de novo.", "warn");
+  }
+  renderPags();
+  renderTotais();
+}
+
+async function cobrarLinha(pg) {
+  const tipo = pg && TIPO_POINT[pg.forma];
+  if (!tipo || pg.point || !(pg.valor > 0)) return;
+  const parcelas = tipo === "credit_card" ? Math.max(1, Math.trunc(pg.parcelas) || 1) : 1;
+  const cobrancaId = novoCobrancaId();
+  pg.point = { cobrancaId, status: "pendente" };
+  renderPags();
+  renderTotais();
+  const r = await cobrarNaMaquininha({
+    cliente: clientePoint,
+    cobrancaId,
+    params: {
+      cobrancaId,
+      tipo,
+      valor: pg.valor,
+      parcelas,
+      // Quem paga o juros segue a tabela ja configurada: cliente com juros > 0
+      // no parcelamento = o cliente paga; senao a loja absorve.
+      quemPagaJuros: quemPagaJuros({ tipo, parcelas, taxas: taxasDe(config, pg.forma, parcelas) }),
+    },
+    resumo: resumoCobranca(pg, parcelas),
+  });
+  aplicarResultadoPoint(pg, r);
+}
+
+async function acompanharLinha(pg) {
+  if (!pg?.point || pg.point.status === "processed") return;
+  const r = await cobrarNaMaquininha({
+    cliente: clientePoint,
+    cobrancaId: pg.point.cobrancaId,
+    jaCriada: true,
+    resumo: resumoCobranca(pg, pg.parcelas || 1),
+  });
+  aplicarResultadoPoint(pg, r);
+}
+
+// Desfazer uma cobranca ja aprovada = estorno total no cartao (so admin: o
+// servidor tambem confere).
+async function estornarLinha(pg) {
+  if (!pg?.point || pg.point.status !== "processed") return;
+  const valor = pg.point.valor_pago ?? pg.valor;
+  if (!(await confirmar(`Estornar ${brl(valor)} no cartao do cliente? O pagamento e cancelado na maquininha.`, { textoConfirmar: "Estornar" }))) return;
+  try {
+    await clientePoint.estornar(pg.point.cobrancaId);
+    delete pg.point;
+    toast("Pagamento estornado.", "ok");
+    renderPags();
+    renderTotais();
+  } catch (e) {
+    toast(e?.message || "Falha ao estornar.", "err");
+  }
 }
 
 function calc() {
@@ -314,6 +456,12 @@ function infoPagamento(p) {
 // (renderTotais) quanto ao finalizar, pra nunca divergir do que e salvo.
 function pagamentosComJuros(pags) {
   return pags.map((p) => {
+    // Pago na maquininha: valem os numeros que ela informou (custo real,
+    // valor cobrado, parcelas); o que faltar cai na estimativa da tabela.
+    if (p.point?.status === "processed") {
+      const est = infoPagamento({ ...p, parcelas: p.point.parcelas ?? p.parcelas });
+      return pagamentoDaMaquininha(p, est, FORMAS_PARCELAVEIS.has(p.forma));
+    }
     const valor = round2(p.valor);
     const base = { forma: p.forma, valor };
     if (!FORMAS_JUROS.includes(p.forma)) return base;
@@ -353,7 +501,8 @@ function renderTotais() {
     <div class="totais"><span>${falta > 0 ? "Falta" : falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(falta))}</span></div>`;
 }
 
-function limpar() {
+// Zera a tela (sem perguntar nada). Usado depois de vender e pelo "Limpar".
+function resetarVenda() {
   carrinho = [];
   pagamentos = [];
   $("#cliente").value = "";
@@ -364,6 +513,40 @@ function limpar() {
   renderCart();
   renderPags();
   renderTotais();
+}
+
+// Botao "Limpar". Cobranca na maquininha nao some sozinha: limpar a tela com
+// dinheiro ja cobrado no cartao (ou uma cobranca aberta) deixaria um
+// pagamento sem venda — entao estorna/cancela antes, ou nao deixa limpar.
+async function limpar() {
+  const aprovadas = pagamentos.filter((p) => p.point?.status === "processed");
+  const pendentes = pagamentos.filter((p) => p.point && p.point.status !== "processed");
+
+  if (aprovadas.length) {
+    if (perfil.role !== "admin")
+      return toast("Ha pagamento aprovado na maquininha neste carrinho. Finalize a venda ou peca a um administrador para estornar.", "err");
+    const total = round2(aprovadas.reduce((s, p) => s + (p.point.valor_pago ?? p.valor), 0));
+    const ok = await confirmar(
+      `Ha ${aprovadas.length} pagamento(s) ja cobrado(s) na maquininha (${brl(total)}). Limpar vai ESTORNAR no cartao. Continuar?`,
+      { textoConfirmar: "Estornar e limpar" }
+    );
+    if (!ok) return;
+    try {
+      for (const p of aprovadas) await clientePoint.estornar(p.point.cobrancaId);
+    } catch (e) {
+      return toast(e?.message || "Falha ao estornar. Nada foi limpo.", "err");
+    }
+  }
+
+  for (const p of pendentes) {
+    try {
+      const { cobranca } = await clientePoint.cancelar(p.point.cobrancaId);
+      if (!cobranca?.final) throw new Error("A cobranca ainda esta aberta na maquininha. Cancele por la e tente de novo.");
+    } catch (e) {
+      return toast(e?.message || "Nao foi possivel cancelar a cobranca em andamento.", "err");
+    }
+  }
+  resetarVenda();
 }
 
 async function finalizar() {
@@ -377,6 +560,12 @@ async function finalizar() {
   const temDinheiro = pagamentos.some((p) => p.forma === "dinheiro" && p.valor > 0);
   if (temDinheiro && !caixaAbertoId)
     return toast("Abra o caixa para receber em dinheiro.", "err");
+  if (pagamentos.some((p) => p.point && p.point.status !== "processed"))
+    return toast("Ha cobranca em andamento na maquininha. Conclua ou cancele antes de finalizar.", "warn");
+  // Com a exigencia ligada, cartao so entra na venda se passou pela maquininha
+  // (senao da pra registrar "credito" sem cobrar nada).
+  if (pointObrigatorio && pagamentos.some((p) => TIPO_POINT[p.forma] && p.valor > 0 && p.point?.status !== "processed"))
+    return toast("Credito e debito precisam ser cobrados na maquininha (botao \"Cobrar na maquininha\").", "err");
 
   const btn = $("#finalizar");
   btn.disabled = true;
@@ -455,7 +644,7 @@ async function finalizar() {
       const p = produtos.find((x) => x.id === it.produtoId);
       if (p) p.estoque = estoqueDe(p) - it.qtd;
     });
-    limpar();
+    resetarVenda();
   } catch (e) {
     toast(e?.message || "Falha ao registrar venda.", "err");
   } finally {

@@ -1,4 +1,5 @@
 import { requireAuth } from "../auth.js";
+import { auth } from "../firebase.js";
 import { initShell, toast, modal, confirmar, escapeHtml, fmtData, erroCard } from "../ui.js";
 import {
   db, collection, getDocs, query, where, orderBy, limit,
@@ -6,6 +7,7 @@ import {
 } from "../db.js";
 import { brl, round2 } from "../money.js";
 import { derivarItensPedido, contaComoPago } from "../produtos-schema.js";
+import { criarClientePoint } from "../point.js";
 
 const CANAIS = { loja: "Loja fisica", site: "Site proprio", mercado_livre: "Mercado Livre", shopee: "Shopee" };
 const FORMAS_LABEL = { dinheiro: "Dinheiro", pix: "Pix", debito: "Debito", credito: "Credito", crediario: "Crediario" };
@@ -18,6 +20,14 @@ const config = await getConfigSistema().catch(() => ({}));
 const formasPagamento = config.formas_pagamento?.length
   ? config.formas_pagamento
   : ["dinheiro", "pix", "debito", "credito", "crediario"];
+
+// Estorno de venda paga na maquininha. Nao depende de point.ativo: mesmo com a
+// maquininha desligada, uma venda antiga paga nela ainda precisa poder ser estornada.
+const clientePoint = criarClientePoint({
+  apiBase: config.point?.api_url || "",
+  obterToken: () => auth.currentUser.getIdToken(),
+});
+const pagamentosPoint = (v) => (v.pagamentos || []).filter((p) => p.point?.cobranca_id && p.point?.status === "processed");
 
 let filtroCanal = "";
 let filtroForma = "";
@@ -173,7 +183,8 @@ function detalhe(v) {
         const detalhe = p.parcelas > 1
           ? ` (${p.parcelas}x${p.valor_parcela != null ? ` de ${brl(p.valor_parcela)}` : ""}${p.juros_pct ? `, ${p.juros_pct}% juros` : ""})`
           : "";
-        return `<div class="totais"><span>${p.forma}${detalhe}</span><span>${brl(p.valor)}</span></div>`;
+        const maquininha = p.point ? ` &middot; maquininha${p.point.bandeira ? " " + escapeHtml(p.point.bandeira) : ""}${p.origem_taxa === "estimada" ? " (taxa estimada)" : ""}` : "";
+        return `<div class="totais"><span>${p.forma}${detalhe}${maquininha}</span><span>${brl(p.valor)}</span></div>`;
       })
       .join("")}
     ${
@@ -190,7 +201,11 @@ function detalhe(v) {
     textoCancelar: "Fechar",
     onConfirmar: podeCancelar
       ? async () => {
-          if (!(await confirmar("Cancelar esta venda? O estoque dos itens sera devolvido.")))
+          const noCartao = pagamentosPoint(v);
+          const aviso = noCartao.length
+            ? ` Isso tambem ESTORNA ${brl(noCartao.reduce((s, p) => s + (p.valor_com_juros ?? p.valor), 0))} no cartao do cliente (maquininha).`
+            : "";
+          if (!(await confirmar(`Cancelar esta venda? O estoque dos itens sera devolvido.${aviso}`)))
             return false;
           await cancelar(v);
           toast("Venda cancelada.", "ok");
@@ -201,6 +216,17 @@ function detalhe(v) {
 }
 
 async function cancelar(v) {
+  // Estorna no cartao ANTES de cancelar a venda: se o estorno falhar, a venda
+  // continua valendo (nada de venda cancelada com o dinheiro ainda cobrado).
+  // O estorno e idempotente no servidor, entao tentar de novo apos uma falha
+  // no meio pula o que ja foi estornado.
+  for (const p of pagamentosPoint(v)) {
+    try {
+      await clientePoint.estornar(p.point.cobranca_id);
+    } catch (e) {
+      throw new Error(`Nao foi possivel estornar o pagamento na maquininha (${e?.message || "erro"}). A venda NAO foi cancelada — tente de novo.`);
+    }
+  }
   await runTransaction(db, async (t) => {
     const vRef = doc(db, "vendas", v.id);
     const vSnap = await t.get(vRef);

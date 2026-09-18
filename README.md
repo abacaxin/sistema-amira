@@ -155,6 +155,10 @@ python scripts/backup_firestore.py --dir backups
 python scripts/backfill_juros_historico.py
 python scripts/backfill_juros_historico.py --aplicar
 
+# backfill de pagamento.parcelas (site) nos espelhos ja existentes em vendas
+python scripts/backfill_parcelas_pedidos_site.py
+python scripts/backfill_parcelas_pedidos_site.py --aplicar
+
 # servidor estatico local para abrir o front sem deploy
 python scripts/dev_server.py
 ```

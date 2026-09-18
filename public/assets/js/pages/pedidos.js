@@ -37,6 +37,19 @@ const STATUS_TAG = {
 // Status em que o estoque ja deve estar baixado.
 const CONSOME_ESTOQUE = new Set(["pago", "preparando", "enviado", "entregue"]);
 
+// O webhook do Mercado Pago (backend do site, repo separado) desconta o
+// estoque no MESMO instante em que confirma o pagamento (pagamento.status
+// vira "aprovado") — ver api/_lib/estoque.js la. Ele NAO marca
+// estoqueBaixado no pedido (so este sistema usava esse campo). Sem esta
+// checagem extra, ao avancar o status aqui (pago -> preparando -> ... ->
+// entregue) o sistema acharia que o estoque nunca foi baixado e descontaria
+// a MESMA compra de novo. pagamento.status so e escrito pelo backend do
+// site (nunca por este sistema), entao e um sinal confiavel de que a baixa
+// ja aconteceu do lado de la.
+function estoqueJaConsumido(pedido) {
+  return pedido.estoqueBaixado === true || pedido?.pagamento?.status === "aprovado";
+}
+
 // Codigo de retirada mostrado ao cliente (comprovante, confirmacao, QR Code)
 // e conferido no balcao. NUNCA fica gravado no pedido — e sempre recalculado
 // a partir do id do documento (mesmo calculo do site, ver
@@ -186,7 +199,7 @@ function renderLista() {
                 <td class="right">${itensCount}</td>
                 <td class="right">${brl(subtotal)}</td>
                 <td>${p.ref ? `<code>${escapeHtml(String(p.ref))}</code>` : "-"}</td>
-                <td>${p.estoqueBaixado ? `<span class="tag ativo">baixado</span>` : `<span class="muted">-</span>`}</td>
+                <td>${estoqueJaConsumido(p) ? `<span class="tag ativo">baixado</span>` : `<span class="muted">-</span>`}</td>
                 <td><span class="tag ${STATUS_TAG[p.status] || ""}">${STATUS_LABEL[p.status] || p.status || "-"}</span></td>
                 <td class="right"><button class="btn ghost ver" data-id="${p.id}">Ver</button></td>
               </tr>`;
@@ -237,7 +250,7 @@ function detalhe(p, statusSugerido) {
     ${temItemSemCatalogo ? `<p style="color:var(--warn)">Algum item nao existe mais no catalogo — o total ignora esses itens.</p>` : ""}
 
     <strong style="display:block;margin-top:14px">Status</strong>
-    <p class="muted">Atual: <strong>${STATUS_LABEL[p.status] || p.status || "-"}</strong>${p.estoqueBaixado ? " &middot; estoque ja baixado" : ""}</p>
+    <p class="muted">Atual: <strong>${STATUS_LABEL[p.status] || p.status || "-"}</strong>${estoqueJaConsumido(p) ? " &middot; estoque ja baixado" : ""}</p>
     <div class="row" style="align-items:end">
       <div>
         <label>Mudar para</label>
@@ -260,9 +273,9 @@ function detalhe(p, statusSugerido) {
   const msg = c.querySelector("#status-msg");
   const pintarMsg = () => {
     const novo = sel.value;
-    if (CONSOME_ESTOQUE.has(novo) && !p.estoqueBaixado)
+    if (CONSOME_ESTOQUE.has(novo) && !estoqueJaConsumido(p))
       msg.textContent = "Ao aplicar, o estoque dos itens sera baixado do catalogo.";
-    else if (novo === "cancelado" && p.estoqueBaixado)
+    else if (novo === "cancelado" && estoqueJaConsumido(p))
       msg.textContent = "Ao cancelar, o estoque dos itens sera devolvido ao catalogo.";
     else msg.textContent = "Só muda o status (estoque nao muda).";
   };
@@ -271,8 +284,8 @@ function detalhe(p, statusSugerido) {
 
   c.querySelector("#aplicar-status").onclick = async () => {
     const novo = sel.value;
-    const consumir = CONSOME_ESTOQUE.has(novo) && !p.estoqueBaixado;
-    const devolver = novo === "cancelado" && p.estoqueBaixado === true;
+    const consumir = CONSOME_ESTOQUE.has(novo) && !estoqueJaConsumido(p);
+    const devolver = novo === "cancelado" && estoqueJaConsumido(p);
     const aviso = consumir
       ? " O estoque dos itens sera baixado."
       : devolver
@@ -299,8 +312,8 @@ function vendaRefDoPedido(pedidoId) {
 
 async function mudarStatus(pedido, novoStatus) {
   const ref = doc(db, "pedidos", pedido.id);
-  const vaiConsumir = CONSOME_ESTOQUE.has(novoStatus) && !pedido.estoqueBaixado;
-  const vaiDevolver = novoStatus === "cancelado" && pedido.estoqueBaixado === true;
+  const vaiConsumir = CONSOME_ESTOQUE.has(novoStatus) && !estoqueJaConsumido(pedido);
+  const vaiDevolver = novoStatus === "cancelado" && estoqueJaConsumido(pedido);
   // Confirmar entrega espelha o pedido em `vendas` (canal "site"), pra
   // aparecer na tela de Vendas — sem numero de venda da loja e sem
   // vendedor_uid (nao gera comissao). Desfazer uma entrega ja confirmada
@@ -311,7 +324,11 @@ async function mudarStatus(pedido, novoStatus) {
   const vaiCancelarVenda = novoStatus === "cancelado" && pedido.status === "entregue";
 
   if (!vaiConsumir && !vaiDevolver && !vaiCriarVenda && !vaiCancelarVenda) {
-    await updateDoc(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+    // "Cura" estoqueBaixado quando quem baixou foi o site (pagamento
+    // aprovado) — deixa o campo confiavel pras telas que o leem direto
+    // (lista/detalhe do pedido) e pra uma eventual devolucao ao cancelar.
+    const cura = estoqueJaConsumido(pedido) && pedido.estoqueBaixado !== true ? { estoqueBaixado: true } : {};
+    await updateDoc(ref, { status: novoStatus, ...cura, atualizadoEm: serverTimestamp() });
     return;
   }
 
@@ -367,9 +384,13 @@ async function mudarStatus(pedido, novoStatus) {
     }
 
     // Reconfirma o estado do estoque no momento da transacao (evita corrida).
-    const jaBaixado = ped.estoqueBaixado === true;
+    const jaBaixado = estoqueJaConsumido(ped);
+    // Cura estoqueBaixado quando quem baixou foi o site (pagamento
+    // aprovado) — deixa o campo confiavel pras telas que o leem direto
+    // e pra uma eventual devolucao ao cancelar depois.
+    const cura = jaBaixado && ped.estoqueBaixado !== true ? { estoqueBaixado: true } : {};
     if (vaiConsumir && jaBaixado) {
-      t.update(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+      t.update(ref, { status: novoStatus, ...cura, atualizadoEm: serverTimestamp() });
       aplicarEfeitoVenda();
       return;
     }
@@ -380,9 +401,9 @@ async function mudarStatus(pedido, novoStatus) {
     }
     if (!vaiConsumir && !vaiDevolver) {
       // Estoque nao muda nessa transicao (ex.: "entregue" chegando depois
-      // do estoque ja ter sido baixado antes, num status anterior) — so o
-      // efeito em `vendas` importa aqui.
-      t.update(ref, { status: novoStatus, atualizadoEm: serverTimestamp() });
+      // do estoque ja ter sido baixado antes, num status anterior — pelo
+      // site ou por este sistema) — so o efeito em `vendas` importa aqui.
+      t.update(ref, { status: novoStatus, ...cura, atualizadoEm: serverTimestamp() });
       aplicarEfeitoVenda();
       return;
     }

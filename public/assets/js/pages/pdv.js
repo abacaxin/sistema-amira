@@ -11,7 +11,7 @@ import { infoPreco, estoquePorModo } from "../produtos-schema.js";
 import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela, resumoTotais } from "../juros.js";
 import {
   TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha,
-  configPointEfetiva, storageSeguro, desativarTesteLocal,
+  configPointEfetiva, storageSeguro, desativarTesteLocal, totalDaCobranca,
 } from "../point.js";
 import { cobrarNaMaquininha } from "../point-ui.js";
 
@@ -368,8 +368,16 @@ function descricaoAprovada(pg) {
   return partes.join(" · ");
 }
 
+// Topo do modal da maquininha: o TOTAL que o cliente vai pagar (em destaque) e,
+// embaixo, parcelas, valor original e juros. Com juros pro cliente o total e
+// estimativa pela tabela (o percentual real do juros e do Mercado Pago).
 function resumoCobranca(pg, parcelas) {
-  return `${brl(pg.valor)} · ${pg.forma}${parcelas > 1 ? ` em ${parcelas}x` : ""}`;
+  const taxas = taxasDe(config, pg.forma, parcelas);
+  const t = totalDaCobranca({ valor: pg.valor, parcelas, taxas, quemPaga: quemPagaJuros({ tipo: TIPO_POINT[pg.forma], parcelas, taxas }) });
+  const partes = [`${pg.forma}${t.parcelas > 1 ? ` em ${t.parcelas}x de ${brl(t.valorParcela)}` : ""}`];
+  if (t.juros > 0) partes.push(`valor original ${brl(t.valorOriginal)}`, `juros do cliente ${brl(t.juros)}`);
+  else partes.push("sem juros pro cliente");
+  return { rotulo: "Total a cobrar do cliente", total: brl(t.total), estimado: t.estimado, detalhe: partes.join(" · ") };
 }
 
 // A linha e um objeto (nao um indice): enquanto o modal esta aberto a tela

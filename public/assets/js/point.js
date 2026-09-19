@@ -161,6 +161,31 @@ export async function iniciarCobranca(cliente, params) {
   }
 }
 
+/**
+ * Quanto o cliente vai pagar na maquininha por uma linha, ANTES de a
+ * maquininha informar o valor real. Só há juros pro cliente quando ele paga o
+ * parcelamento (quemPaga === "buyer"); nos demais casos a loja absorve a taxa
+ * e o cliente paga o valor cheio. O percentual do juros do comprador é do
+ * Mercado Pago (a API só escolhe QUEM paga), então nesse caso o total é uma
+ * estimativa pela tabela de juros — `estimado` avisa a tela.
+ * @param {{valor:number, parcelas?:number, taxas?:{cliente?:number}, quemPaga?:"buyer"|"seller"}} p
+ * @returns {{total:number, valorOriginal:number, juros:number, parcelas:number, valorParcela:number, estimado:boolean}}
+ */
+export function totalDaCobranca({ valor, parcelas = 1, taxas, quemPaga }) {
+  const arred = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const valorOriginal = arred(Number(valor) || 0);
+  const n = Math.max(1, Math.trunc(parcelas) || 1);
+  const total = quemPaga === "buyer" ? arred(valorOriginal * (1 + Number((taxas && taxas.cliente) || 0) / 100)) : valorOriginal;
+  return {
+    total,
+    valorOriginal,
+    juros: arred(total - valorOriginal),
+    parcelas: n,
+    valorParcela: arred(total / n),
+    estimado: quemPaga === "buyer" && total !== valorOriginal
+  };
+}
+
 /** Quem paga o juros do parcelamento na maquininha, seguindo a tabela já configurada. */
 export function quemPagaJuros({ tipo, parcelas, taxas }) {
   return tipo === "credit_card" && parcelas > 1 && Number(taxas && taxas.cliente) > 0 ? "buyer" : "seller";

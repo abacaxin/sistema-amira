@@ -19,7 +19,8 @@ import {
   ativarTesteLocal,
   desativarTesteLocal,
   configPointEfetiva,
-  detalheLegivel
+  detalheLegivel,
+  totalDaCobranca
 } from "../public/assets/js/point.js";
 
 // ── fetch falso ──
@@ -438,4 +439,52 @@ test("detalheLegivel: prefere o motivo do PAGAMENTO, traduz os conhecidos e não
   assert.equal(detalheLegivel({ status: "expired" }), "");
   assert.equal(detalheLegivel(null), "");
   assert.equal(detalheLegivel(undefined), "");
+});
+
+// ── Total cobrado do cliente (topo do modal da maquininha) ──
+test("totalDaCobranca: loja absorve (seller) → o cliente paga o valor cheio, nada estimado, mesmo com % de cliente na tabela", () => {
+  const t = totalDaCobranca({ valor: 119.9, parcelas: 5, taxas: { cliente: 10, loja: 5 }, quemPaga: "seller" });
+  assert.equal(t.total, 119.9);
+  assert.equal(t.valorOriginal, 119.9);
+  assert.equal(t.juros, 0);
+  assert.equal(t.estimado, false);
+  assert.equal(t.parcelas, 5);
+  assert.equal(t.valorParcela, 23.98);
+});
+
+test("totalDaCobranca: cliente paga o juros (buyer) → total pela tabela, marcado como estimado", () => {
+  const t = totalDaCobranca({ valor: 100, parcelas: 3, taxas: { cliente: 5, loja: 2 }, quemPaga: "buyer" });
+  assert.equal(t.total, 105);
+  assert.equal(t.juros, 5);
+  assert.equal(t.valorParcela, 35);
+  assert.equal(t.estimado, true);
+});
+
+test("totalDaCobranca: débito e crédito à vista (1x) e entradas estranhas não estouram", () => {
+  const debito = totalDaCobranca({ valor: 50, quemPaga: "seller" });
+  assert.deepEqual(debito, { total: 50, valorOriginal: 50, juros: 0, parcelas: 1, valorParcela: 50, estimado: false });
+  assert.equal(totalDaCobranca({ valor: "abc", quemPaga: "seller" }).total, 0);
+  assert.equal(totalDaCobranca({ valor: 10, parcelas: 0, quemPaga: "seller" }).parcelas, 1);
+  assert.equal(totalDaCobranca({ valor: 10, parcelas: "3x", quemPaga: "seller" }).parcelas, 1, "parcelas inválidas viram 1");
+  // buyer sem % na tabela (não deveria acontecer) não inventa juros
+  const semTaxa = totalDaCobranca({ valor: 10, parcelas: 2, taxas: undefined, quemPaga: "buyer" });
+  assert.equal(semTaxa.total, 10);
+  assert.equal(semTaxa.estimado, false);
+});
+
+test("totalDaCobranca: arredonda em centavos (valor da parcela e do juros)", () => {
+  const t = totalDaCobranca({ valor: 33.33, parcelas: 3, taxas: { cliente: 7.5 }, quemPaga: "buyer" });
+  assert.equal(t.total, 35.83);
+  assert.equal(t.juros, 2.5);
+  assert.equal(t.valorParcela, 11.94);
+});
+
+test("totalDaCobranca combina com quemPagaJuros: o que é pedido ao MP é o que vira estimativa na tela", () => {
+  const taxas = { cliente: 5, loja: 2 };
+  const buyer = quemPagaJuros({ tipo: "credit_card", parcelas: 3, taxas });
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 3, taxas, quemPaga: buyer }).total, 105);
+  const seller = quemPagaJuros({ tipo: "credit_card", parcelas: 1, taxas }); // 1x: MP não parcela com juros
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 1, taxas, quemPaga: seller }).total, 100);
+  const debito = quemPagaJuros({ tipo: "debit_card", parcelas: 1, taxas });
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 1, taxas, quemPaga: debito }).total, 100);
 });

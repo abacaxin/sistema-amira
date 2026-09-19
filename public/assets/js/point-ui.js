@@ -25,15 +25,21 @@ import { iniciarCobranca, aguardarCobranca, textoStatus, detalheLegivel } from "
 
 const ROTULO_FINAL = { recusada: "Pagamento recusado.", cancelada: "Cobrança cancelada.", expirada: "Tempo esgotado sem pagamento." };
 
+// `resumo` é o texto grande do topo. Aceita uma string (só o texto) ou um objeto
+// { rotulo, total, estimado, detalhe }: o TOTAL cobrado do cliente em destaque,
+// com um rótulo em cima e o detalhe (parcelas, valor original, juros) embaixo.
 export function cobrarNaMaquininha({ cliente, cobrancaId, params, resumo, jaCriada = false }) {
   return new Promise((resolve) => {
     let fechado = false; // a pessoa fechou o modal (botão Fechar ou clique fora)
     let aoFechar = () => {};
 
+    const r = typeof resumo === "string" || !resumo ? { total: resumo || "" } : resumo;
     const corpo = document.createElement("div");
     corpo.className = "pt-box";
     corpo.innerHTML = `
-      <div class="pt-valor">${escapeHtml(resumo || "")}</div>
+      ${r.rotulo ? `<div class="pt-rotulo">${escapeHtml(r.rotulo)}</div>` : ""}
+      <div class="pt-valor">${escapeHtml(r.total || "")}${r.estimado ? ` <small class="pt-est">(estimado)</small>` : ""}</div>
+      ${r.detalhe ? `<div class="pt-detalhe">${escapeHtml(r.detalhe)}</div>` : ""}
       <div class="pt-spin" id="pt-spin" aria-hidden="true"></div>
       <p class="pt-status" id="pt-status" role="status" aria-live="polite">${escapeHtml(textoStatus(null))}</p>
       <p class="muted" id="pt-aviso"></p>

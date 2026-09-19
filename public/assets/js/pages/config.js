@@ -77,8 +77,9 @@ root.innerHTML = `
     <p class="muted">Cobra crédito e débito direto na maquininha pelo PDV e traz a taxa real de cada venda. Precisa da API (Vercel) no ar e da maquininha em modo PDV — passo a passo no README, seção "Maquininha Mercado Pago Point".</p>
     <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-ativo" ${point.ativo === true ? "checked" : ""} style="width:auto"> Usar a maquininha no PDV (botão "Cobrar na maquininha")</label>
     <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-obrigatorio" ${point.obrigatorio === true ? "checked" : ""} style="width:auto"> Exigir a maquininha em crédito e débito (não deixa registrar cartão manualmente)</label>
-    <label>URL da API (deixe vazio se a API estiver no mesmo domínio do sistema)</label>
-    <input id="point-api" value="${escapeHtml(point.api_url ?? "")}" placeholder="https://sistema-amira-api.vercel.app">
+    <label>URL da API publicada (deixe vazio se a API estiver no mesmo domínio do sistema)</label>
+    <input id="point-api" value="${escapeHtml(point.api_url ?? "")}" placeholder="https://SEU-PROJETO.vercel.app">
+    <p class="muted" style="margin:6px 0 0">Esta é a URL da API <strong>publicada</strong> (Vercel) e vale pra todos os usuários; o exemplo acima é só um modelo. Testando no seu computador? Use o bloco <strong>“Teste só neste computador”</strong> logo abaixo, que já vem com <code>http://localhost:3001</code> e não altera isto.</p>
     <div class="row" style="margin-top:12px">
       <div style="flex:0 0 auto"><button class="btn" id="salvar-point">Salvar maquininha</button></div>
       <div style="flex:0 0 auto"><button class="btn ghost" id="testar-point">Testar conexão</button></div>
@@ -325,8 +326,10 @@ function htmlFalha(e, base) {
     dica = `A API não aceitou o seu login. Confira se a service account (<code>FIREBASE_SERVICE_ACCOUNT</code> ou o <code>serviceAccount.json</code>) é do projeto <code>flora-5754a</code> — a mesma conta que entra aqui — e entre de novo no sistema.`;
   } else if (e?.status === 403) {
     dica = `Só administradores podem testar a conexão.`;
+  } else if (!base) {
+    dica = `A URL da API está vazia, então procurei neste mesmo endereço e não há API aqui. Se a API está no seu computador, ative o <strong>“Teste só neste computador”</strong> logo abaixo (<code>http://localhost:3001</code>). Se está na Vercel, preencha a URL dela no campo acima.`;
   } else if (e?.status === 404) {
-    dica = `${onde} respondeu, mas não tem a rota de diagnóstico — provavelmente é uma versão antiga da API. Publique a versão nova.`;
+    dica = `Não encontrei a rota de diagnóstico em ${onde}. Confira se essa é mesmo a URL da API do sistema e se a versão publicada é a mais nova.`;
   } else {
     dica = `Confira a URL da API e se ela está no ar.`;
   }
@@ -339,6 +342,10 @@ async function testarConexao() {
   box.innerHTML = `<p class="muted">Consultando ${base ? `<code>${escapeHtml(base)}</code>` : "a API deste site"}…</p>`;
   try {
     const d = await clientePointDaTela().diagnostico();
+    // Um servidor qualquer (ex.: o proprio site devolvendo uma pagina) pode responder 200 sem ser a nossa API.
+    if (!d || !Array.isArray(d.checks)) {
+      throw Object.assign(new Error("A resposta não parece ser da API da maquininha."), { status: 404 });
+    }
     box.innerHTML = htmlChecklist(d) + htmlTerminais(d);
     box.querySelectorAll(".pt-modo").forEach((b) => {
       b.onclick = async () => {

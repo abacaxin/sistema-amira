@@ -431,9 +431,23 @@ A API roda **no seu computador** e usa o **mesmo Firestore de producao**: as ven
    ```
 
 5. Entre em `http://localhost:5173` como **administrador** → Configuracoes → *Teste so neste
-   computador* → **Ativar teste local**. Vale **so neste navegador** (nao muda a configuracao dos
-   outros usuarios) e o PDV mostra uma faixa amarela "TESTE LOCAL" enquanto estiver ligado. Em
+   computador* → **Ativar teste local**. A URL da API local (`http://localhost:3001`) ja vem
+   preenchida nesse bloco. Vale **so neste navegador** (nao muda a configuracao dos outros
+   usuarios) e o PDV mostra uma faixa amarela "TESTE LOCAL" enquanto estiver ligado. Em
    *Maquininha* clique **Testar conexao**: o checklist tem que ficar todo verde.
+
+   **Onde vai cada URL** (nenhuma vai na maquininha — ela so precisa estar vinculada a conta do MP
+   e em modo PDV):
+
+   | Onde | URL | Quando |
+   |---|---|---|
+   | *Teste so neste computador* → URL da API local | `http://localhost:3001` | teste de hoje |
+   | *Maquininha* → URL da API publicada | a URL que a Vercel der ao publicar | dia a dia (vale pra todos) |
+   | Painel do MP → Webhooks (topico Order) | `https://<sua-api>/api/webhook-point` | opcional, so depois de publicar |
+
+   O campo *Maquininha → URL da API* pode ficar vazio no teste local (o PDV so usa a URL **salva**
+   ou a do teste local, e salvar `localhost` ali valeria pra todo mundo). *Testar conexao* usa o
+   que estiver digitado nele sem salvar.
 6. **Primeira cobranca**: no PDV, um produto com **Desconto** ate o total dar **R$ 1,00** →
    pagamento **Debito** → **Cobrar na maquininha** → o cliente passa o cartao → finalize. Confira a
    linha (taxa e `origem_taxa`). Depois **cancele a venda em Vendas** (estorna no cartao e devolve o
@@ -451,6 +465,7 @@ Se algo falhar, o `point:check` e o **Testar conexao** dizem o que:
 | "nenhum terminal" | maquininha nao vinculada a loja/caixa | vincule pelo app do MP (QR Code no terminal) |
 | terminal em modo `STANDALONE` | maquininha em modo autonomo | `--colocar-pdv`, ou o botao em Configuracoes; reinicie a maquininha se nao mudar |
 | Testar conexao: "Sem conexao" | `api:dev` fechado ou porta diferente | rode `npm run api:dev` e deixe aberto |
+| Testar conexao: "URL da API esta vazia" | nenhum teste local ativo e o campo da URL vazio | ative o *Teste so neste computador* (ou preencha a URL publicada) |
 | Testar conexao: "nao aceitou o seu login" | service account de outro projeto | use a chave do `flora-5754a` e entre de novo |
 | "cobranca pendente na maquininha" | ja existe uma cobranca aberta la | conclua ou cancele na propria maquininha |
 

@@ -44,6 +44,8 @@ export function criarClientePoint({ apiBase = "", obterToken, fetchImpl }) {
     if (!resp.ok) {
       const e = new Error((dados && dados.erro) || `Erro ${resp.status} no servidor da maquininha.`);
       e.status = resp.status;
+      // Código opcional pra a tela agir sem interpretar o texto (ex.: "na_maquininha").
+      if (dados && dados.codigo) e.codigo = dados.codigo;
       // "definitivo" = a NOSSA API respondeu com um erro explícito, então a
       // cobrança com certeza não foi criada. Erro de rede ou de gateway
       // (sem JSON nosso) é ambíguo: a order pode existir na maquininha.
@@ -162,6 +164,34 @@ export async function iniciarCobranca(cliente, params) {
 /** Quem paga o juros do parcelamento na maquininha, seguindo a tabela já configurada. */
 export function quemPagaJuros({ tipo, parcelas, taxas }) {
   return tipo === "credit_card" && parcelas > 1 && Number(taxas && taxas.cliente) > 0 ? "buyer" : "seller";
+}
+
+// Motivos que o MP informa (status_detail do pagamento) → texto pra vendedora.
+const DETALHES = {
+  canceled_on_terminal: "Cancelada na maquininha.",
+  canceled_by_api: "Cancelada pelo sistema.",
+  rejected_by_issuer: "Recusado pelo banco do cartão.",
+  insufficient_amount: "Saldo ou limite insuficiente.",
+  card_disabled: "Cartão bloqueado ou desativado.",
+  bad_filled_card_data: "Dados do cartão incorretos.",
+  high_risk: "Recusado por segurança.",
+  amount_limit_exceeded: "Valor acima do limite do cartão.",
+  max_attempts_exceeded: "Muitas tentativas seguidas. Tente de novo.",
+  processing_error: "Erro de processamento. Tente de novo.",
+  required_call_for_authorize: "O banco pede autorização por telefone.",
+  invalid_installments: "Parcelamento não aceito pelo cartão.",
+  in_review: "Pagamento em análise."
+};
+
+/**
+ * Motivo legível de a cobrança ter terminado assim ("" se não há nada além do
+ * próprio status). Prefere o motivo do PAGAMENTO, que é o específico; o da
+ * order costuma repetir o status ("canceled", "failed").
+ */
+export function detalheLegivel(cobranca) {
+  const bruto = cobranca && (cobranca.pagamento_detalhe || cobranca.status_detail);
+  if (!bruto || bruto === cobranca.status) return "";
+  return DETALHES[bruto] || `Detalhe: ${bruto}`;
 }
 
 /** status do MP → resultado que o PDV entende (null = ainda em andamento). */

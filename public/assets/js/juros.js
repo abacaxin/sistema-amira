@@ -55,3 +55,46 @@ export function infoParcela(valorOriginal, parcelas, taxas) {
   const valorParcela = round2(valorComJuros / Math.max(1, Math.trunc(parcelas) || 1));
   return { pctCliente, pctLoja, valorComJuros, custoLoja, valorLiquido, valorParcela };
 }
+
+/**
+ * Numeros do bloco de totais do PDV: quanto o cliente paga (ja com juros),
+ * o valor original, o custo da loja e quanto a loja recebe.
+ *
+ * @param {{total:number, pago:number, pagamentos:object[]}} p
+ *   total: valor ORIGINAL da venda (subtotal - desconto)
+ *   pago: soma dos valores ORIGINAIS alocados nas formas de pagamento (e o que
+ *         valida o "Finalizar" — nao muda aqui)
+ *   pagamentos: as linhas de pagamento ja com juros/custo (pagamentosComJuros do PDV)
+ *
+ * A conta fecha sempre: totalCobrado = pagoCobrado + falta. `falta` e em valor
+ * de tabela: o que ainda nao foi alocado entra no total como se fosse pago sem
+ * juros (e um troco em dinheiro reduz o total), ate a pessoa escolher a forma.
+ * `valorAReceber` = valor original - custo da loja: o juros cobrado do cliente
+ * e informativo e nunca compensa o custo (regra da loja, ver infoParcela).
+ */
+export function resumoTotais({ total, pago, pagamentos = [] }) {
+  const soma = (fn) => round2(pagamentos.reduce((s, p) => s + fn(p), 0));
+  const valorOriginal = round2(total);
+  const pagoCobrado = soma((p) => p.valor_com_juros ?? p.valor ?? 0);
+  const custoLojaTotal = soma((p) => p.custo_loja || 0);
+  const falta = round2(total - pago);
+  const totalCobrado = round2(pagoCobrado + falta);
+
+  // Linha paga na maquininha ja tem os numeros REAIS; o resto (tabela de juros) e estimativa.
+  const daMaquininha = (p) => p.point?.status === "processed";
+  return {
+    valorOriginal,
+    totalCobrado,
+    pagoCobrado,
+    falta,
+    custoLojaTotal,
+    valorAReceber: round2(valorOriginal - custoLojaTotal),
+    // So mostra "Valor original" quando ele diz algo diferente do Total ou ha custo.
+    mostrarOriginal: totalCobrado !== valorOriginal || custoLojaTotal > 0,
+    mostrarReceber: custoLojaTotal > 0,
+    estimadoCobranca: pagamentos.some(
+      (p) => !daMaquininha(p) && p.valor_com_juros !== undefined && round2(p.valor_com_juros) !== round2(p.valor || 0)
+    ),
+    estimadoReceber: pagamentos.some((p) => (p.custo_loja || 0) > 0 && p.origem_taxa !== "maquininha"),
+  };
+}

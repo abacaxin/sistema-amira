@@ -10,6 +10,7 @@ const {
   compactar,
   projetarCobranca,
   trocarCampoQuemPagaJuros,
+  codigoErroMp,
   mapearTerminais,
   CAMPO_QUEM_PAGA_JUROS
 } = require("../api/_lib/point");
@@ -144,6 +145,34 @@ test("trocarCampoQuemPagaJuros: débito (sem o campo) ou corpo estranho nunca tr
 test("trocarCampoQuemPagaJuros: acha o campo também na mensagem do erro (sem detalhe JSON)", () => {
   const alt = trocarCampoQuemPagaJuros(corpoCredito(), erroMp(400, undefined, "HTTP 400: installments_cost inválido"));
   assert.equal(alt.config.payment_method.default_installments_cost, "buyer");
+});
+
+// ── codigoErroMp / detalhe do pagamento ──
+test("codigoErroMp: lê errors[0].code, depois code/error na raiz; sem nada devolve vazio", () => {
+  assert.equal(codigoErroMp({ detalhe: { errors: [{ code: "cannot_cancel_order", message: "x" }] } }), "cannot_cancel_order");
+  assert.equal(codigoErroMp({ detalhe: { code: "order_not_found" } }), "order_not_found");
+  assert.equal(codigoErroMp({ detalhe: { error: "bad_request" } }), "bad_request");
+  assert.equal(codigoErroMp({ detalhe: { errors: [] } }), "");
+  assert.equal(codigoErroMp({ detalhe: {} }), "");
+  assert.equal(codigoErroMp(new Error("sem detalhe")), "");
+  assert.equal(codigoErroMp(null), "");
+  assert.equal(codigoErroMp(undefined), "");
+});
+
+test("normalizarOrder / projetarCobranca: o motivo do PAGAMENTO (canceled_on_terminal, rejected_by_issuer...) é guardado e chega à tela", () => {
+  const n = normalizarOrder({
+    id: "ORD1", status: "canceled", status_detail: "canceled",
+    transactions: { payments: [{ id: "PAY1", status: "canceled", status_detail: "canceled_on_terminal" }] }
+  });
+  assert.equal(n.pagamento_detalhe, "canceled_on_terminal");
+  assert.equal(n.status_detail, "canceled");
+
+  const semDetalhe = normalizarOrder({ id: "ORD2", status: "created", transactions: { payments: [{ id: "P" }] } });
+  assert.equal(semDetalhe.pagamento_detalhe, null);
+
+  const p = projetarCobranca({ cobranca_id: "x", status: "failed", pagamento_detalhe: "rejected_by_issuer", vendedor_uid: "u1" });
+  assert.equal(p.pagamento_detalhe, "rejected_by_issuer");
+  assert.equal("vendedor_uid" in p, false);
 });
 
 // ── mapearTerminais ──

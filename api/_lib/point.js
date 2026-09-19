@@ -110,6 +110,17 @@ function trocarCampoQuemPagaJuros(corpo, erro) {
   return { ...corpo, config: { ...corpo.config, payment_method: { ...resto, [outro]: valor } } };
 }
 
+/**
+ * Código do erro que o MP devolveu (ex.: "cannot_cancel_order",
+ * "order_already_canceled"), ou "" se não veio. Os erros do MP chegam em
+ * `errors[0].code`; alguns endpoints usam `code`/`error` na raiz.
+ */
+function codigoErroMp(erro) {
+  const d = erro && erro.detalhe;
+  const primeiro = d && Array.isArray(d.errors) ? d.errors[0] : null;
+  return String((primeiro && primeiro.code) || (d && (d.code || d.error)) || "");
+}
+
 /** Terminais do MP → formato usado pela API/tela (id, modo, loja/caixa) marcando o configurado. */
 function mapearTerminais(resposta, configurado) {
   const lista = (resposta && ((resposta.data && resposta.data.terminals) || resposta.terminals)) || [];
@@ -147,6 +158,9 @@ function normalizarOrder(order) {
     payment_ref: pg.reference_id ? String(pg.reference_id) : null,
     status,
     status_detail: (order && order.status_detail) || null,
+    // O motivo de verdade costuma estar no pagamento (ex.: "canceled_on_terminal",
+    // "rejected_by_issuer"); o da order é mais genérico ("canceled", "failed").
+    pagamento_detalhe: pg.status_detail || null,
     final: STATUS_FINAIS.has(status),
     aprovado: status === "processed",
     parcelas: numero(metodo.installments),
@@ -218,6 +232,7 @@ function projetarCobranca(d) {
     cobranca_id: d.cobranca_id,
     status: d.status,
     status_detail: d.status_detail,
+    pagamento_detalhe: d.pagamento_detalhe,
     final: Boolean(d.final),
     aprovado: Boolean(d.aprovado),
     estornada: d.status === "refunded",
@@ -245,6 +260,7 @@ module.exports = {
   validarCobranca,
   montarOrderPoint,
   trocarCampoQuemPagaJuros,
+  codigoErroMp,
   mapearTerminais,
   primeiroPagamento,
   normalizarOrder,

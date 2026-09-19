@@ -9,6 +9,7 @@ const { criarFakeDb, criarReq, criarRes, criarMpFalso } = require("./helpers/fak
 const ID = "pdv-3f2a9c1e-0b7d-4a55-9d10-aaaaaaaaaaaa";
 const ID2 = "pdv-77777777-0b7d-4a55-9d10-bbbbbbbbbbbb";
 const TERMINAL = "PAX_A910__SMARTPOS123";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const VENDEDORA = { uid: "u-vera", email: "vera@x", role: "vendedor", nome: "Vera" };
 const OUTRO = { uid: "u-caio", email: "caio@x", role: "vendedor", nome: "Caio" };
@@ -387,15 +388,75 @@ test("cancelar: cancela no MP, relê a order e marca cancelada", async () => {
   assert.equal(mp.quantas("cancelar"), 1);
   const [, orderId, chave] = mp.chamadas.find((c) => c[0] === "cancelar");
   assert.equal(orderId, "ORD00001");
-  assert.equal(chave, `cancel-${ID}`);
+  assert.match(chave, UUID, "chave de idempotência nova (UUID), não derivada do id da cobrança");
 });
 
-test("cancelar: MP recusa (já está na maquininha) → 409 orientando cancelar por lá", async () => {
-  const { handlers, mp } = await comCobranca();
-  mp.falhas.cancelar = Object.assign(new Error("not cancelable"), { status: 502, mpStatus: 400 });
+// Erro do MP no formato real (mpFetch): status 502 nosso, mpStatus = HTTP do MP, detalhe = corpo.
+const erroMpFalso = (mpStatus, codigo, mensagem) =>
+  Object.assign(new Error(`Mercado Pago POST /v1/orders/ORD00001/cancel -> HTTP ${mpStatus}: ${mensagem}`), {
+    status: 502,
+    mpStatus,
+    detalhe: { errors: [{ code: codigo, message: mensagem }] },
+    publico: `O Mercado Pago recusou a requisição: ${mensagem}`
+  });
+
+test("cancelar: order já na maquininha (409 cannot_cancel_order) → 409 com codigo na_maquininha e instrução clara; nada muda", async () => {
+  const { handlers, mp, db } = await comCobranca();
+  mp.avancar("ORD00001", { status: "at_terminal" });
+  await chamar(handlers.status, get("tok-vera", { cobrancaId: ID }));
+  mp.falhas.cancelar = erroMpFalso(409, "cannot_cancel_order", "Orders only cancel via API when status=created; use terminal for status=at_terminal");
+
   const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+
   assert.equal(res.statusCode, 409);
+  assert.equal(res.corpo.codigo, "na_maquininha");
+  assert.match(res.corpo.erro, /já está na maquininha/);
+  assert.match(res.corpo.erro, /cancelar \(X\) na própria maquininha/);
+  assert.equal(db.ler("cobrancas_point", ID).status, "at_terminal", "o estado local não é alterado");
+});
+
+test("cancelar: MP diz que já estava cancelada (409 order_already_canceled) → não é erro: sincroniza e devolve cancelada", async () => {
+  const { handlers, mp, db } = await comCobranca();
+  mp.avancar("ORD00001", { status: "canceled", status_detail: "canceled", pagamento: { status: "canceled", status_detail: "canceled_on_terminal" } });
+  mp.falhas.cancelar = erroMpFalso(409, "order_already_canceled", "Order already canceled");
+
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.cobranca.status, "canceled");
+  assert.equal(res.corpo.cobranca.final, true);
+  assert.equal(res.corpo.cobranca.pagamento_detalhe, "canceled_on_terminal", "o motivo real (cancelada na maquininha) chega à tela");
+  assert.equal(db.ler("cobrancas_point", ID).status, "canceled");
+});
+
+test("cancelar: qualquer outra recusa do MP mostra o MOTIVO REAL (502), não uma mensagem genérica", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = erroMpFalso(500, "internal_error", "Internal error, retry request");
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /Internal error, retry request/);
   assert.match(res.corpo.erro, /cancele por lá/i);
+  assert.equal(res.corpo.codigo, undefined, "sem codigo especial");
+});
+
+test("cancelar: falha de rede (sem resposta do MP) vira 502 com orientação, não 500 genérico", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = new TypeError("fetch failed");
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /Não deu pra cancelar pelo sistema/);
+});
+
+test("cancelar: cada tentativa usa uma chave de idempotência DIFERENTE (segundo clique não bate em idempotency_key_already_used)", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = erroMpFalso(409, "cannot_cancel_order", "use terminal");
+  await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID })); // agora o fake cancela de verdade
+  const chaves = mp.chamadas.filter((c) => c[0] === "cancelar").map((c) => c[2]);
+  assert.equal(chaves.length, 2);
+  assert.match(chaves[0], UUID);
+  assert.match(chaves[1], UUID);
+  assert.notEqual(chaves[0], chaves[1]);
 });
 
 test("cancelar: cobrança já final não vai ao MP; só o dono ou admin cancela", async () => {
@@ -446,7 +507,7 @@ test("estornar: admin estorna uma cobrança aprovada e o registro guarda quem fe
   const d = db.ler("cobrancas_point", ID);
   assert.equal(d.estornado_por_uid, ADMIN.uid);
   assert.ok(d.estornado_em);
-  assert.equal(mp.chamadas.find((c) => c[0] === "estornar")[2], `refund-${ID}`);
+  assert.match(mp.chamadas.find((c) => c[0] === "estornar")[2], UUID, "chave de idempotência nova (UUID)");
 
   // Estornar de novo é idempotente: não chama o MP outra vez.
   const de_novo = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
@@ -467,6 +528,38 @@ test("estornar: se o MP recusa (prazo de 90 dias), o documento não muda", async
   const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
   assert.equal(res.statusCode, 502);
   assert.equal(db.ler("cobrancas_point", ID).status, "processed");
+});
+
+test("estornar: o MP recusa mas a order JÁ está estornada (resposta anterior perdida / estorno feito no app) → conclui sem erro", async () => {
+  const { handlers, mp, db } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 409, publico: "O Mercado Pago recusou a requisição: order already refunded" });
+  mp.avancar("ORD00001", { status: "refunded" });
+
+  const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.cobranca.status, "refunded");
+  assert.equal(db.ler("cobrancas_point", ID).status, "refunded");
+  assert.equal(db.ler("cobrancas_point", ID).estornado_por_uid, ADMIN.uid);
+});
+
+test("estornar: o MP recusa e a order NÃO está estornada → erro de verdade, documento intacto (não marca estornada à toa)", async () => {
+  const { handlers, mp, db } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 400, publico: "O Mercado Pago recusou a requisição: prazo excedido" });
+  const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /prazo excedido/);
+  assert.equal(db.ler("cobrancas_point", ID).status, "processed");
+});
+
+test("estornar: tentativas repetidas usam chaves de idempotência diferentes", async () => {
+  const { handlers, mp } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 500, publico: "erro" });
+  await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  const chaves = mp.chamadas.filter((c) => c[0] === "estornar").map((c) => c[2]);
+  assert.equal(chaves.length, 2);
+  assert.notEqual(chaves[0], chaves[1]);
 });
 
 // ─────────────────────────── terminais ───────────────────────────

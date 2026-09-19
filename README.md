@@ -395,7 +395,7 @@ dias) sao do plano da conta no MP; o sistema nao altera isso.
 |---|---|---|
 | `POST /api/point/cobrar` | equipe | cria a order na maquininha `{cobrancaId, tipo, valor, parcelas, quemPagaJuros}` |
 | `GET /api/point/status?cobrancaId=` | dono da cobranca ou admin | atualiza no MP e devolve o estado |
-| `POST /api/point/cancelar` | dono ou admin | cancela a cobranca pendente |
+| `POST /api/point/cancelar` | dono ou admin | cancela a cobranca **so ate ela chegar na maquininha** (depois, so na propria maquininha; ver "Cancelar uma cobranca") |
 | `POST /api/point/estornar` | **admin** | estorno total (ate 90 dias) |
 | `GET/POST /api/point/terminais` | **admin** | lista terminais / troca modo `PDV` ↔ `STANDALONE` |
 | `GET /api/point/diagnostico` | **admin** | checklist: token do MP, Firebase, terminais, modo PDV (nunca devolve segredo) |
@@ -469,6 +469,7 @@ Se algo falhar, o `point:check` e o **Testar conexao** dizem o que:
 | Testar conexao: "URL da API esta vazia" | nenhum teste local ativo e o campo da URL vazio | ative o *Teste so neste computador* (ou preencha a URL publicada) |
 | Testar conexao: "nao aceitou o seu login" | service account de outro projeto | use a chave do `flora-5754a` e entre de novo |
 | "cobranca pendente na maquininha" | ja existe uma cobranca aberta la | conclua ou cancele na propria maquininha |
+| Cancelar cobranca: "ja esta na maquininha, so da pra cancelar por la" | o Mercado Pago so cancela pela API antes da cobranca chegar na maquininha | aperte o **X** na maquininha; a tela do PDV percebe sozinha ("Cancelada na maquininha") |
 
 ### Colocar no ar (passo a passo)
 
@@ -513,8 +514,26 @@ passo a passo esta em "Conectar hoje".
 - De onde vem a **taxa real**: o codigo tenta o pagamento na API classica
   (`/v1/payments/{reference_id}` → `net_received_amount`/`fee_details`). Se a order nao trouxer
   esse id, a taxa cai em `origem_taxa: "estimada"` — o `mp_raw` mostra o formato verdadeiro.
-- Cancelar uma cobranca que ja esta na maquininha (`at_terminal`) pela API: a doc e ambigua. Se o
-  MP recusar, o sistema orienta cancelar pela propria maquininha.
+- Cancelar uma cobranca que ja esta na maquininha (`at_terminal`) pela API: a referencia da API
+  diz que so cancela uma order em `created` (segundos depois de criada) e que em `at_terminal`
+  responde 409 `cannot_cancel_order`. O guia de migracao cita o header
+  `x-allow-cancelable-status: at_terminal` (continuamos mandando), mas o cancelar do primeiro teste
+  real falhou. Agora a tela mostra o motivo exato devolvido pelo MP: confirme aqui no proximo
+  teste. Se um dia a maquininha aceitar o header, o cancelamento pela API volta a funcionar sozinho
+  (ver "Cancelar uma cobranca").
+
+### Cancelar uma cobranca
+
+- **Antes de chegar na maquininha** (poucos segundos apos criar, status `created`): o botao
+  *Cancelar cobranca* do PDV cancela pela API.
+- **Ja na maquininha** (`at_terminal`): so ela cancela — aperte o **X** nela. O PDV avisa isso na tela
+  (o botao some) e **percebe sozinho** quando cancelam la: a cobranca vira "Cancelada na maquininha"
+  e a linha do pagamento e liberada. O mesmo vale pro botao *Limpar* com cobranca aberta.
+- Se o cliente pagar no mesmo instante em que a vendedora cancela, o *Limpar* **nao apaga** o
+  pagamento: a linha passa a "cobrada" (finalize a venda ou use *Limpar* de novo pra estornar).
+- Cada tentativa de cancelar/estornar usa uma chave de idempotencia **nova** (o MP recusa reuso da
+  mesma) e "ja cancelada"/"ja estornada" no MP conta como sucesso. Qualquer outra recusa do MP
+  aparece na tela com o motivo real.
 
 ### Operacao
 

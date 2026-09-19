@@ -111,6 +111,7 @@ tbody tr:hover { background: #f9f2f1; }
 
 .totais { display: flex; justify-content: space-between; padding: 5px 0; }
 .totais.big { font-size: 20px; font-weight: 700; color: var(--plum); border-top: 2px solid var(--line); margin-top: 8px; padding-top: 12px; }
+.totais-nota { font-size: 12px; font-weight: 400; color: var(--muted); }
 
 .nav-toggle { display: none; }
 .nav-toggle-btn { display: none; }
@@ -172,6 +173,12 @@ tbody tr:hover { background: #f9f2f1; }
 .pt-erro { color: var(--err); font-weight: 600; }
 @keyframes pt-giro { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .pt-spin { animation: none; } }
+
+.pt-dica { font-size: 12px; margin: 10px 0 0; }
+.pt-cancelar-msg {
+  margin: 10px 0 0; padding: 8px 10px; text-align: left; font-size: 13px; font-weight: 600;
+  border: 1px solid #e6d2b4; border-left: 4px solid var(--warn); border-radius: 8px; background: #fbf3e8;
+}
 
 .pt-linha { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 13px; }
 .pt-ok { color: var(--ok); font-weight: 600; }

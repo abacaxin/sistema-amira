@@ -18,7 +18,8 @@ import {
   lerTesteLocal,
   ativarTesteLocal,
   desativarTesteLocal,
-  configPointEfetiva
+  configPointEfetiva,
+  detalheLegivel
 } from "../public/assets/js/point.js";
 
 // ── fetch falso ──
@@ -410,4 +411,31 @@ test("storage bloqueado pelo navegador: nada estoura e o sistema segue com a con
 
 test("storageSeguro: sem localStorage (Node) devolve null em vez de estourar", () => {
   assert.equal(storageSeguro(), null);
+});
+
+// ── Cancelar cobrança: código do erro e motivo legível ──
+test("cliente: o 'codigo' que a API manda (ex.: na_maquininha) chega no erro; sem codigo, a propriedade nem existe", async () => {
+  const f = fetchFalso([{ status: 409, corpo: { erro: "A cobrança já está na maquininha.", codigo: "na_maquininha" } }]);
+  await assert.rejects(
+    () => cliente(f).cancelar("pdv-1"),
+    (e) => e.codigo === "na_maquininha" && e.status === 409 && e.definitivo === true && /maquininha/.test(e.message)
+  );
+  const g = fetchFalso([{ status: 400, corpo: { erro: "Valor inválido." } }]);
+  await assert.rejects(() => cliente(g).cobrar({}), (e) => !("codigo" in e));
+});
+
+test("detalheLegivel: prefere o motivo do PAGAMENTO, traduz os conhecidos e não repete o próprio status", () => {
+  assert.equal(detalheLegivel({ status: "canceled", status_detail: "canceled", pagamento_detalhe: "canceled_on_terminal" }), "Cancelada na maquininha.");
+  assert.equal(detalheLegivel({ status: "canceled", pagamento_detalhe: "canceled_by_api" }), "Cancelada pelo sistema.");
+  assert.equal(detalheLegivel({ status: "failed", status_detail: "failed", pagamento_detalhe: "rejected_by_issuer" }), "Recusado pelo banco do cartão.");
+  assert.equal(detalheLegivel({ status: "failed", pagamento_detalhe: "insufficient_amount" }), "Saldo ou limite insuficiente.");
+  // só o da order (sem o do pagamento) também vale
+  assert.equal(detalheLegivel({ status: "failed", status_detail: "card_disabled" }), "Cartão bloqueado ou desativado.");
+  // motivo desconhecido aparece cru (melhor que esconder)
+  assert.equal(detalheLegivel({ status: "failed", pagamento_detalhe: "motivo_novo_do_mp" }), "Detalhe: motivo_novo_do_mp");
+  // nada a dizer além do status
+  assert.equal(detalheLegivel({ status: "canceled", status_detail: "canceled" }), "");
+  assert.equal(detalheLegivel({ status: "expired" }), "");
+  assert.equal(detalheLegivel(null), "");
+  assert.equal(detalheLegivel(undefined), "");
 });

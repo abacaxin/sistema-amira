@@ -8,7 +8,7 @@ import {
 import { brl, round2, parseNum } from "../money.js";
 import { calcularComissao } from "../regras.js";
 import { infoPreco, estoquePorModo } from "../produtos-schema.js";
-import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela } from "../juros.js";
+import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela, resumoTotais } from "../juros.js";
 import {
   TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha,
   configPointEfetiva, storageSeguro, desativarTesteLocal,
@@ -503,19 +503,25 @@ function agregarJuros(pagsComJuros) {
   return { totalComJuros, custoLojaTotal, valorLiquido };
 }
 
+// O "Total" grande e o que o cliente PAGA (ja com juros, o que a maquininha
+// cobra); logo abaixo o valor original do produto, o custo da loja e o que a
+// loja recebe. As contas estao em resumoTotais (juros.js, com testes). O
+// "Finalizar" continua validando em valor ORIGINAL (calc), nada mudou nisso.
 function renderTotais() {
   const { subtotal, desconto, total, pago } = calc();
-  const falta = round2(total - pago);
-  const { totalComJuros, custoLojaTotal, valorLiquido } = agregarJuros(pagamentosComJuros(pagamentos));
+  const r = resumoTotais({ total, pago, pagamentos: pagamentosComJuros(pagamentos) });
+  const notaTotal = r.mostrarOriginal
+    ? ` <small class="totais-nota">a cobrar do cliente${r.estimadoCobranca ? " (estimado)" : ""}</small>`
+    : "";
   $("#totais").innerHTML = `
     <div class="totais"><span>Subtotal</span><span>${brl(subtotal)}</span></div>
     <div class="totais"><span>Desconto</span><span>- ${brl(desconto)}</span></div>
-    <div class="totais big"><span>Total</span><span>${brl(total)}</span></div>
-    ${totalComJuros !== total ? `<div class="totais"><span>Total com juros (a cobrar do cliente)</span><span>${brl(totalComJuros)}</span></div>` : ""}
-    ${custoLojaTotal > 0 ? `<div class="totais"><span>Custo da loja (maquininha/financiamento)</span><span>- ${brl(custoLojaTotal)}</span></div>` : ""}
-    ${custoLojaTotal > 0 ? `<div class="totais"><span>Valor liquido estimado</span><span>${brl(valorLiquido)}</span></div>` : ""}
-    <div class="totais"><span>Pago</span><span>${brl(pago)}</span></div>
-    <div class="totais"><span>${falta > 0 ? "Falta" : falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(falta))}</span></div>`;
+    <div class="totais big"><span>Total${notaTotal}</span><span>${brl(r.totalCobrado)}</span></div>
+    ${r.mostrarOriginal ? `<div class="totais"><span>Valor original</span><span>${brl(r.valorOriginal)}</span></div>` : ""}
+    ${r.mostrarReceber ? `<div class="totais"><span>Custo da loja (maquininha/financiamento)</span><span>- ${brl(r.custoLojaTotal)}</span></div>` : ""}
+    ${r.mostrarReceber ? `<div class="totais"><span>Valor a receber${r.estimadoReceber ? " (estimado)" : ""}</span><span>${brl(r.valorAReceber)}</span></div>` : ""}
+    <div class="totais"><span>Pago</span><span>${brl(r.pagoCobrado)}</span></div>
+    <div class="totais"><span>${r.falta > 0 ? "Falta" : r.falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(r.falta))}</span></div>`;
 }
 
 // Zera a tela (sem perguntar nada). Usado depois de vender e pelo "Limpar".
@@ -558,8 +564,20 @@ async function limpar() {
   for (const p of pendentes) {
     try {
       const { cobranca } = await clientePoint.cancelar(p.point.cobrancaId);
+      if (cobranca?.status === "processed") {
+        // Foi aprovada na maquininha no mesmo instante: o dinheiro JA foi cobrado.
+        // Nao limpa (perderia o pagamento): a linha passa a "cobrada".
+        marcarAprovada(p, cobranca);
+        renderPags();
+        renderTotais();
+        return toast("Esse pagamento foi aprovado na maquininha antes de cancelar. Finalize a venda ou use Limpar de novo pra estornar.", "warn");
+      }
       if (!cobranca?.final) throw new Error("A cobranca ainda esta aberta na maquininha. Cancele por la e tente de novo.");
     } catch (e) {
+      // O MP so cancela pela API antes de a cobranca chegar na maquininha; depois, so por la.
+      if (e?.codigo === "na_maquininha") {
+        return toast("A cobranca esta aberta na maquininha e so da pra cancelar por la: aperte o X na maquininha e clique em Limpar de novo.", "err");
+      }
       return toast(e?.message || "Nao foi possivel cancelar a cobranca em andamento.", "err");
     }
   }
@@ -573,7 +591,7 @@ async function finalizar() {
   const { subtotal, desconto, total, pago } = calc();
   if (total < 0) return toast("Desconto maior que o subtotal.", "err");
   if (round2(pago) !== total)
-    return toast(`Pagamentos (${brl(pago)}) diferentes do total (${brl(total)}).`, "err");
+    return toast(`Os valores das formas de pagamento somam ${brl(pago)}, mas o valor original da venda e ${brl(total)}.`, "err");
   const temDinheiro = pagamentos.some((p) => p.forma === "dinheiro" && p.valor > 0);
   if (temDinheiro && !caixaAbertoId)
     return toast("Abra o caixa para receber em dinheiro.", "err");

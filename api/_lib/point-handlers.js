@@ -24,6 +24,7 @@ const {
   primeiroPagamento,
   normalizarOrder,
   trocarCampoQuemPagaJuros,
+  codigoErroMp,
   mapearTerminais,
   extrairTaxas,
   podeAvancar,
@@ -34,6 +35,14 @@ const { diagnosticar } = require("./point-diagnostico");
 
 const COLECAO = "cobrancas_point";
 const ID_COBRANCA = /^[A-Za-z0-9_-]{8,60}$/;
+
+// O MP só cancela pela API uma order que ainda NÃO chegou na maquininha
+// (status "created"). Depois disso (status "at_terminal", o que acontece em
+// segundos) devolve 409 cannot_cancel_order e o cancelamento é pela própria
+// maquininha. O guia de migração cita um header que liberaria isso, e nós o
+// mandamos, mas na prática o MP recusa — daí a mensagem abaixo.
+const MSG_CANCELAR_NA_MAQUININHA =
+  "A cobrança já está na maquininha, e o Mercado Pago só deixa cancelar por lá. Aperte o botão de cancelar (X) na própria maquininha — esta tela atualiza sozinha.";
 
 // Assinatura do MP (x-signature). manifest = "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"
 // mas cada segmento SÓ entra se o valor existir (spec do MP). Retorna
@@ -71,7 +80,16 @@ function checarAssinatura(req, dataId, env) {
   }
 }
 
-function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, checarFirebase, env = process.env, agora = () => new Date() }) {
+function criarHandlers({
+  getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, checarFirebase,
+  env = process.env,
+  agora = () => new Date(),
+  // Chave de idempotência NOVA a cada tentativa de cancelar/estornar: essas
+  // operações já são idempotentes pelo estado da order (cancelar/estornar duas
+  // vezes é recusado), e reaproveitar a chave faz o MP responder
+  // "idempotency_key_already_used" (409) num segundo clique.
+  novaChave = () => crypto.randomUUID()
+}) {
   const podeMexer = (staff, d) => staff.role === "admin" || d.vendedor_uid === staff.uid;
 
   function idDaQuery(req) {
@@ -263,13 +281,21 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
       }
 
       try {
-        await mp.cancelarOrderPoint(d.order_id, `cancel-${d.cobranca_id}`);
+        await mp.cancelarOrderPoint(d.order_id, novaChave());
       } catch (erro) {
-        console.warn("[point] cancelar recusado pelo MP:", erro && erro.message);
-        throw erroHttp(
-          409,
-          "Não deu pra cancelar pelo sistema — se a cobrança já está aberta na maquininha, cancele por lá (botão de cancelar/voltar) e aguarde aqui."
-        );
+        const codigo = codigoErroMp(erro);
+        if (erro && erro.mpStatus === 409 && codigo === "order_already_canceled") {
+          // Já estava cancelada (cancelada na maquininha um instante antes, por
+          // exemplo): não é falha — segue e sincroniza o estado abaixo.
+        } else if (erro && erro.mpStatus === 409 && codigo === "cannot_cancel_order") {
+          console.warn("[point] cancelar: a order já está na maquininha (cannot_cancel_order):", erro.message);
+          throw erroHttp(409, MSG_CANCELAR_NA_MAQUININHA, { codigo: "na_maquininha" });
+        } else {
+          // Qualquer outra recusa: mostra o motivo REAL do MP (antes ficava só no log).
+          console.warn("[point] cancelar recusado pelo MP:", erro && erro.message);
+          const motivo = erro && erro.publico ? `${erro.publico}. ` : "";
+          throw erroHttp(502, `Não deu pra cancelar pelo sistema. ${motivo}Se a cobrança já está na maquininha, cancele por lá (botão X).`);
+        }
       }
       // Estado canônico depois do cancelamento (a resposta do cancel pode vir enxuta).
       const order = await mp.buscarOrderPoint(d.order_id);
@@ -294,7 +320,17 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
         throw erroHttp(409, "Só dá pra estornar uma cobrança aprovada.");
       }
 
-      const resposta = await mp.estornarOrderPoint(d.order_id, `refund-${d.cobranca_id}`);
+      let resposta;
+      try {
+        resposta = await mp.estornarOrderPoint(d.order_id, novaChave());
+      } catch (erro) {
+        // O MP recusou. Antes de desistir, confere o estado real: se a order JÁ
+        // está estornada (resposta de uma tentativa anterior que se perdeu, ou
+        // estorno feito pelo app do MP), o objetivo foi cumprido — não é erro.
+        const order = await mp.buscarOrderPoint(d.order_id).catch(() => null);
+        if (!order || order.status !== "refunded") throw erro;
+        resposta = { status: "refunded" };
+      }
       // O estorno é sempre total. Gravamos direto: o MP já confirmou na resposta.
       await ref.update(
         compactar({

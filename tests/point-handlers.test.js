@@ -9,14 +9,16 @@ const { criarFakeDb, criarReq, criarRes, criarMpFalso } = require("./helpers/fak
 const ID = "pdv-3f2a9c1e-0b7d-4a55-9d10-aaaaaaaaaaaa";
 const ID2 = "pdv-77777777-0b7d-4a55-9d10-bbbbbbbbbbbb";
 const TERMINAL = "PAX_A910__SMARTPOS123";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const VENDEDORA = { uid: "u-vera", email: "vera@x", role: "vendedor", nome: "Vera" };
 const OUTRO = { uid: "u-caio", email: "caio@x", role: "vendedor", nome: "Caio" };
 const ADMIN = { uid: "u-dono", email: "dono@x", role: "admin", nome: "Dono" };
 const TOKENS = { "tok-vera": VENDEDORA, "tok-caio": OUTRO, "tok-dono": ADMIN };
 
-function montar({ env = {}, mp = criarMpFalso(), db = criarFakeDb() } = {}) {
+function montar({ env = {}, mp = criarMpFalso(), db = criarFakeDb(), checarFirebase = async () => ({ projectId: "flora-5754a" }) } = {}) {
   const handlers = criarHandlers({
+    checarFirebase,
     getDb: () => db,
     exigirStaff: async (token) => {
       if (!TOKENS[token]) throw erroHttp(401, "Sessão expirada. Entre de novo no sistema para continuar.");
@@ -115,6 +117,76 @@ test("cobrar: débito não leva parcelas nem juros na order", async () => {
   await chamar(handlers.cobrar, post("tok-vera", { cobrancaId: ID, tipo: "debit_card", valor: 50 }));
   const [, body] = mp.chamadas.find((c) => c[0] === "criar");
   assert.deepEqual(body.config.payment_method, { default_type: "debit_card" });
+});
+
+// O MP aceita "installments_cost" OU "default_installments_cost" (a doc usa os
+// dois). Se recusar o primeiro citando o campo, o handler tenta o outro uma
+// vez — o primeiro teste real não pode morrer por causa disso.
+const recusaDoCampo = (campo) =>
+  Object.assign(new Error(`Mercado Pago POST /v1/orders -> HTTP 400: ${campo} is not allowed`), {
+    status: 502,
+    mpStatus: 400,
+    detalhe: { errors: [{ message: `${campo} is not allowed` }] },
+    publico: `O Mercado Pago recusou a requisição: ${campo} is not allowed`
+  });
+
+test("cobrar: MP recusa o nome do campo de quem paga o juros → tenta o alternativo e a cobrança sai", async () => {
+  const { handlers, mp, db } = montar();
+  mp.falhas.criar = recusaDoCampo("installments_cost");
+
+  const res = await chamar(handlers.cobrar, post("tok-vera", { ...corpoCredito, quemPagaJuros: "buyer" }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.cobranca.order_id, "ORD00001");
+  const criacoes = mp.chamadas.filter((c) => c[0] === "criar");
+  assert.equal(criacoes.length, 2);
+  assert.equal(criacoes[0][1].config.payment_method.installments_cost, "buyer");
+  assert.equal(criacoes[1][1].config.payment_method.default_installments_cost, "buyer");
+  assert.equal("installments_cost" in criacoes[1][1].config.payment_method, false);
+  // o corpo mudou, então a chave de idempotência também (senão o MP devolveria a resposta velha)
+  assert.deepEqual([criacoes[0][2], criacoes[1][2]], [ID, `${ID}-b`]);
+  // o resto da order é idêntico
+  assert.equal(criacoes[1][1].external_reference, ID);
+  assert.equal(criacoes[1][1].config.point.terminal_id, TERMINAL);
+  assert.equal(db.ler("cobrancas_point", ID).status, "created");
+});
+
+test("cobrar: se o nome alternativo também for recusado, o erro do MP chega ao PDV (sem terceira tentativa)", async () => {
+  const { handlers, mp, db } = montar();
+  // Recusa sempre, citando o nome do campo que ELE recebeu (os dois nomes).
+  mp.criarOrderPoint = async (body, chave) => {
+    mp.chamadas.push(["criar", body, chave]);
+    throw recusaDoCampo(Object.keys(body.config.payment_method).find((k) => /installments_cost/.test(k)));
+  };
+
+  const res = await chamar(handlers.cobrar, post("tok-vera", corpoCredito));
+
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /is not allowed/);
+  assert.equal(mp.quantas("criar"), 2, "original + alternativo, nada além");
+  assert.equal(db.ler("cobrancas_point", ID).status, "erro");
+});
+
+test("cobrar: 400 do MP que não fala desse campo não dispara a segunda tentativa", async () => {
+  const { handlers, mp } = montar();
+  mp.falhas.criar = Object.assign(new Error("HTTP 400: terminal not in PDV mode"), {
+    status: 502,
+    mpStatus: 400,
+    detalhe: { errors: [{ message: "terminal not in PDV mode" }] },
+    publico: "O Mercado Pago recusou a requisição: terminal not in PDV mode"
+  });
+  const res = await chamar(handlers.cobrar, post("tok-vera", corpoCredito));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /PDV mode/);
+  assert.equal(mp.quantas("criar"), 1);
+});
+
+test("cobrar: débito nunca tenta o campo alternativo (a order não tem esse campo)", async () => {
+  const { handlers, mp } = montar();
+  mp.falhas.criar = recusaDoCampo("installments_cost");
+  const res = await chamar(handlers.cobrar, post("tok-vera", { cobrancaId: ID, tipo: "debit_card", valor: 10 }));
+  assert.equal(res.statusCode, 502);
+  assert.equal(mp.quantas("criar"), 1);
 });
 
 test("cobrar: valida a entrada (400) sem tocar no MP nem gravar nada", async () => {
@@ -316,15 +388,75 @@ test("cancelar: cancela no MP, relê a order e marca cancelada", async () => {
   assert.equal(mp.quantas("cancelar"), 1);
   const [, orderId, chave] = mp.chamadas.find((c) => c[0] === "cancelar");
   assert.equal(orderId, "ORD00001");
-  assert.equal(chave, `cancel-${ID}`);
+  assert.match(chave, UUID, "chave de idempotência nova (UUID), não derivada do id da cobrança");
 });
 
-test("cancelar: MP recusa (já está na maquininha) → 409 orientando cancelar por lá", async () => {
-  const { handlers, mp } = await comCobranca();
-  mp.falhas.cancelar = Object.assign(new Error("not cancelable"), { status: 502, mpStatus: 400 });
+// Erro do MP no formato real (mpFetch): status 502 nosso, mpStatus = HTTP do MP, detalhe = corpo.
+const erroMpFalso = (mpStatus, codigo, mensagem) =>
+  Object.assign(new Error(`Mercado Pago POST /v1/orders/ORD00001/cancel -> HTTP ${mpStatus}: ${mensagem}`), {
+    status: 502,
+    mpStatus,
+    detalhe: { errors: [{ code: codigo, message: mensagem }] },
+    publico: `O Mercado Pago recusou a requisição: ${mensagem}`
+  });
+
+test("cancelar: order já na maquininha (409 cannot_cancel_order) → 409 com codigo na_maquininha e instrução clara; nada muda", async () => {
+  const { handlers, mp, db } = await comCobranca();
+  mp.avancar("ORD00001", { status: "at_terminal" });
+  await chamar(handlers.status, get("tok-vera", { cobrancaId: ID }));
+  mp.falhas.cancelar = erroMpFalso(409, "cannot_cancel_order", "Orders only cancel via API when status=created; use terminal for status=at_terminal");
+
   const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+
   assert.equal(res.statusCode, 409);
+  assert.equal(res.corpo.codigo, "na_maquininha");
+  assert.match(res.corpo.erro, /já está na maquininha/);
+  assert.match(res.corpo.erro, /cancelar \(X\) na própria maquininha/);
+  assert.equal(db.ler("cobrancas_point", ID).status, "at_terminal", "o estado local não é alterado");
+});
+
+test("cancelar: MP diz que já estava cancelada (409 order_already_canceled) → não é erro: sincroniza e devolve cancelada", async () => {
+  const { handlers, mp, db } = await comCobranca();
+  mp.avancar("ORD00001", { status: "canceled", status_detail: "canceled", pagamento: { status: "canceled", status_detail: "canceled_on_terminal" } });
+  mp.falhas.cancelar = erroMpFalso(409, "order_already_canceled", "Order already canceled");
+
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.cobranca.status, "canceled");
+  assert.equal(res.corpo.cobranca.final, true);
+  assert.equal(res.corpo.cobranca.pagamento_detalhe, "canceled_on_terminal", "o motivo real (cancelada na maquininha) chega à tela");
+  assert.equal(db.ler("cobrancas_point", ID).status, "canceled");
+});
+
+test("cancelar: qualquer outra recusa do MP mostra o MOTIVO REAL (502), não uma mensagem genérica", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = erroMpFalso(500, "internal_error", "Internal error, retry request");
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /Internal error, retry request/);
   assert.match(res.corpo.erro, /cancele por lá/i);
+  assert.equal(res.corpo.codigo, undefined, "sem codigo especial");
+});
+
+test("cancelar: falha de rede (sem resposta do MP) vira 502 com orientação, não 500 genérico", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = new TypeError("fetch failed");
+  const res = await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /Não deu pra cancelar pelo sistema/);
+});
+
+test("cancelar: cada tentativa usa uma chave de idempotência DIFERENTE (segundo clique não bate em idempotency_key_already_used)", async () => {
+  const { handlers, mp } = await comCobranca();
+  mp.falhas.cancelar = erroMpFalso(409, "cannot_cancel_order", "use terminal");
+  await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID }));
+  await chamar(handlers.cancelar, post("tok-vera", { cobrancaId: ID })); // agora o fake cancela de verdade
+  const chaves = mp.chamadas.filter((c) => c[0] === "cancelar").map((c) => c[2]);
+  assert.equal(chaves.length, 2);
+  assert.match(chaves[0], UUID);
+  assert.match(chaves[1], UUID);
+  assert.notEqual(chaves[0], chaves[1]);
 });
 
 test("cancelar: cobrança já final não vai ao MP; só o dono ou admin cancela", async () => {
@@ -375,7 +507,7 @@ test("estornar: admin estorna uma cobrança aprovada e o registro guarda quem fe
   const d = db.ler("cobrancas_point", ID);
   assert.equal(d.estornado_por_uid, ADMIN.uid);
   assert.ok(d.estornado_em);
-  assert.equal(mp.chamadas.find((c) => c[0] === "estornar")[2], `refund-${ID}`);
+  assert.match(mp.chamadas.find((c) => c[0] === "estornar")[2], UUID, "chave de idempotência nova (UUID)");
 
   // Estornar de novo é idempotente: não chama o MP outra vez.
   const de_novo = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
@@ -396,6 +528,38 @@ test("estornar: se o MP recusa (prazo de 90 dias), o documento não muda", async
   const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
   assert.equal(res.statusCode, 502);
   assert.equal(db.ler("cobrancas_point", ID).status, "processed");
+});
+
+test("estornar: o MP recusa mas a order JÁ está estornada (resposta anterior perdida / estorno feito no app) → conclui sem erro", async () => {
+  const { handlers, mp, db } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 409, publico: "O Mercado Pago recusou a requisição: order already refunded" });
+  mp.avancar("ORD00001", { status: "refunded" });
+
+  const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.cobranca.status, "refunded");
+  assert.equal(db.ler("cobrancas_point", ID).status, "refunded");
+  assert.equal(db.ler("cobrancas_point", ID).estornado_por_uid, ADMIN.uid);
+});
+
+test("estornar: o MP recusa e a order NÃO está estornada → erro de verdade, documento intacto (não marca estornada à toa)", async () => {
+  const { handlers, mp, db } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 400, publico: "O Mercado Pago recusou a requisição: prazo excedido" });
+  const res = await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  assert.equal(res.statusCode, 502);
+  assert.match(res.corpo.erro, /prazo excedido/);
+  assert.equal(db.ler("cobrancas_point", ID).status, "processed");
+});
+
+test("estornar: tentativas repetidas usam chaves de idempotência diferentes", async () => {
+  const { handlers, mp } = await comCobrancaAprovada();
+  mp.falhas.estornar = Object.assign(new Error("x"), { status: 502, mpStatus: 500, publico: "erro" });
+  await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  await chamar(handlers.estornar, post("tok-dono", { cobrancaId: ID }));
+  const chaves = mp.chamadas.filter((c) => c[0] === "estornar").map((c) => c[2]);
+  assert.equal(chaves.length, 2);
+  assert.notEqual(chaves[0], chaves[1]);
 });
 
 // ─────────────────────────── terminais ───────────────────────────
@@ -429,6 +593,58 @@ test("terminais: vendedor não mexe (403)", async () => {
   assert.equal((await chamar(handlers.terminais, get("tok-vera", {}))).statusCode, 403);
   assert.equal((await chamar(handlers.terminais, post("tok-vera", { terminalId: TERMINAL, modo: "PDV" }))).statusCode, 403);
   assert.equal(mp.chamadas.length, 0);
+});
+
+// ─────────────────────────── diagnóstico ───────────────────────────
+test("diagnostico: admin recebe o checklist completo (200) e a lista de terminais", async () => {
+  const { handlers, mp } = montar({ env: { MP_ACCESS_TOKEN: "APP_USR-x", MP_WEBHOOK_SECRET: "s" } });
+  mp.terminaisMp = [{ id: TERMINAL, operating_mode: "PDV", store_id: 1, pos_id: 2 }];
+  const res = await chamar(handlers.diagnostico, get("tok-dono", {}));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.ok, true);
+  assert.equal(res.corpo.configurado, TERMINAL);
+  assert.equal(res.corpo.terminais[0].selecionado, true);
+  assert.deepEqual(res.corpo.checks.map((c) => c.id), ["token_mp", "firebase", "terminais", "terminal_configurado", "webhook", "cors"]);
+});
+
+test("diagnostico: problemas de configuração NÃO viram erro HTTP — o diagnóstico é a resposta", async () => {
+  const { handlers } = montar({
+    env: { MP_ACCESS_TOKEN: "", MP_POINT_TERMINAL_ID: "" },
+    checarFirebase: async () => { throw new Error("FIREBASE_SERVICE_ACCOUNT não configurada"); }
+  });
+  const res = await chamar(handlers.diagnostico, get("tok-dono", {}));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.corpo.ok, false);
+  assert.equal(res.corpo.checks.find((c) => c.id === "token_mp").nivel, "erro");
+  assert.equal(res.corpo.checks.find((c) => c.id === "firebase").nivel, "erro");
+});
+
+test("diagnostico: vendedor leva 403, sem login 401, método errado 405 — e o MP nem é consultado", async () => {
+  const { handlers, mp } = montar({ env: { MP_ACCESS_TOKEN: "APP_USR-x" } });
+  assert.equal((await chamar(handlers.diagnostico, get("tok-vera", {}))).statusCode, 403);
+  assert.equal((await chamar(handlers.diagnostico, get("token-invalido", {}))).statusCode, 401);
+  assert.equal((await chamar(handlers.diagnostico, post("tok-dono", {}))).statusCode, 405);
+  assert.equal(mp.chamadas.length, 0);
+});
+
+test("diagnostico: responde o preflight de CORS sem exigir login", async () => {
+  const { handlers, mp } = montar();
+  const res = await chamar(
+    handlers.diagnostico,
+    criarReq({ method: "OPTIONS", headers: { origin: "http://localhost:5173" } })
+  );
+  assert.equal(res.statusCode, 204);
+  assert.equal(res.headers["access-control-allow-origin"], "http://localhost:5173");
+  assert.equal(mp.chamadas.length, 0);
+});
+
+test("terminais (GET): usa o mesmo mapeamento do diagnóstico e aceita a resposta sem o envelope data", async () => {
+  const { handlers, mp } = montar();
+  mp.listarTerminais = async () => ({ terminals: [{ id: TERMINAL, operating_mode: "PDV", store_id: 5, pos_id: 6 }] });
+  const res = await chamar(handlers.terminais, get("tok-dono", {}));
+  assert.deepEqual(res.corpo.terminais, [
+    { id: TERMINAL, modo: "PDV", loja_id: 5, caixa_id: 6, caixa_externo: null, selecionado: true }
+  ]);
 });
 
 // ─────────────────────────── webhook ───────────────────────────

@@ -8,8 +8,11 @@ import {
 import { brl, round2, parseNum } from "../money.js";
 import { calcularComissao } from "../regras.js";
 import { infoPreco, estoquePorModo } from "../produtos-schema.js";
-import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela } from "../juros.js";
-import { TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha } from "../point.js";
+import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela, resumoTotais } from "../juros.js";
+import {
+  TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha,
+  configPointEfetiva, storageSeguro, desativarTesteLocal, totalDaCobranca,
+} from "../point.js";
 import { cobrarNaMaquininha } from "../point-ui.js";
 
 const { perfil } = await requireAuth();
@@ -26,11 +29,13 @@ const parc = config.parcelamento || { maximo: 12, minimo_parcela: 0, juros: {} }
 // Maquininha Mercado Pago Point (opcional — Configuracoes → Maquininha). Com
 // ela ligada, credito/debito ganham o botao "Cobrar na maquininha"; sem ela
 // (ou com a API fora do ar) o registro manual de cartao continua igual.
-const pointCfg = config.point || {};
+// "Teste local" (Configuracoes → Maquininha) liga a maquininha so NESTE
+// navegador, apontando pra API local — sem mexer na config de todo mundo.
+const pointCfg = configPointEfetiva(config.point, storageSeguro());
 const pointAtivo = pointCfg.ativo === true;
 const pointObrigatorio = pointAtivo && pointCfg.obrigatorio === true;
 const clientePoint = pointAtivo
-  ? criarClientePoint({ apiBase: pointCfg.api_url || "", obterToken: () => auth.currentUser.getIdToken() })
+  ? criarClientePoint({ apiBase: pointCfg.api_url, obterToken: () => auth.currentUser.getIdToken() })
   : null;
 
 // Caixa e UNICO pra loja toda — nao e "do usuario logado". Qualquer
@@ -58,6 +63,12 @@ let carrinho = [];
 let pagamentos = [];
 
 root.innerHTML = `
+  ${pointCfg.testeLocal ? `
+  <div class="pt-banner-local" id="pt-banner-local">
+    <div><strong>TESTE LOCAL da maquininha</strong> — ligada só neste computador, usando a API em <code>${escapeHtml(pointCfg.api_url)}</code>.
+    As vendas feitas aqui são <strong>reais</strong>: gravam no sistema e baixam o estoque.</div>
+    <button class="btn ghost" id="pt-local-off">Desativar teste local</button>
+  </div>` : ""}
   <div class="grid auto">
     <div class="card">
       <strong>Produtos</strong>
@@ -105,6 +116,12 @@ $("#add-pag").onclick = () => {
 };
 $("#limpar").onclick = limpar;
 $("#finalizar").onclick = finalizar;
+if (pointCfg.testeLocal) {
+  $("#pt-local-off").onclick = () => {
+    desativarTesteLocal(storageSeguro());
+    location.reload();
+  };
+}
 
 renderResultados();
 renderCart();
@@ -351,8 +368,16 @@ function descricaoAprovada(pg) {
   return partes.join(" · ");
 }
 
+// Topo do modal da maquininha: o TOTAL que o cliente vai pagar (em destaque) e,
+// embaixo, parcelas, valor original e juros. Com juros pro cliente o total e
+// estimativa pela tabela (o percentual real do juros e do Mercado Pago).
 function resumoCobranca(pg, parcelas) {
-  return `${brl(pg.valor)} · ${pg.forma}${parcelas > 1 ? ` em ${parcelas}x` : ""}`;
+  const taxas = taxasDe(config, pg.forma, parcelas);
+  const t = totalDaCobranca({ valor: pg.valor, parcelas, taxas, quemPaga: quemPagaJuros({ tipo: TIPO_POINT[pg.forma], parcelas, taxas }) });
+  const partes = [`${pg.forma}${t.parcelas > 1 ? ` em ${t.parcelas}x de ${brl(t.valorParcela)}` : ""}`];
+  if (t.juros > 0) partes.push(`valor original ${brl(t.valorOriginal)}`, `juros do cliente ${brl(t.juros)}`);
+  else partes.push("sem juros pro cliente");
+  return { rotulo: "Total a cobrar do cliente", total: brl(t.total), estimado: t.estimado, detalhe: partes.join(" · ") };
 }
 
 // A linha e um objeto (nao um indice): enquanto o modal esta aberto a tela
@@ -486,19 +511,25 @@ function agregarJuros(pagsComJuros) {
   return { totalComJuros, custoLojaTotal, valorLiquido };
 }
 
+// O "Total" grande e o que o cliente PAGA (ja com juros, o que a maquininha
+// cobra); logo abaixo o valor original do produto, o custo da loja e o que a
+// loja recebe. As contas estao em resumoTotais (juros.js, com testes). O
+// "Finalizar" continua validando em valor ORIGINAL (calc), nada mudou nisso.
 function renderTotais() {
   const { subtotal, desconto, total, pago } = calc();
-  const falta = round2(total - pago);
-  const { totalComJuros, custoLojaTotal, valorLiquido } = agregarJuros(pagamentosComJuros(pagamentos));
+  const r = resumoTotais({ total, pago, pagamentos: pagamentosComJuros(pagamentos) });
+  const notaTotal = r.mostrarOriginal
+    ? ` <small class="totais-nota">a cobrar do cliente${r.estimadoCobranca ? " (estimado)" : ""}</small>`
+    : "";
   $("#totais").innerHTML = `
     <div class="totais"><span>Subtotal</span><span>${brl(subtotal)}</span></div>
     <div class="totais"><span>Desconto</span><span>- ${brl(desconto)}</span></div>
-    <div class="totais big"><span>Total</span><span>${brl(total)}</span></div>
-    ${totalComJuros !== total ? `<div class="totais"><span>Total com juros (a cobrar do cliente)</span><span>${brl(totalComJuros)}</span></div>` : ""}
-    ${custoLojaTotal > 0 ? `<div class="totais"><span>Custo da loja (maquininha/financiamento)</span><span>- ${brl(custoLojaTotal)}</span></div>` : ""}
-    ${custoLojaTotal > 0 ? `<div class="totais"><span>Valor liquido estimado</span><span>${brl(valorLiquido)}</span></div>` : ""}
-    <div class="totais"><span>Pago</span><span>${brl(pago)}</span></div>
-    <div class="totais"><span>${falta > 0 ? "Falta" : falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(falta))}</span></div>`;
+    <div class="totais big"><span>Total${notaTotal}</span><span>${brl(r.totalCobrado)}</span></div>
+    ${r.mostrarOriginal ? `<div class="totais"><span>Valor original</span><span>${brl(r.valorOriginal)}</span></div>` : ""}
+    ${r.mostrarReceber ? `<div class="totais"><span>Custo da loja (maquininha/financiamento)</span><span>- ${brl(r.custoLojaTotal)}</span></div>` : ""}
+    ${r.mostrarReceber ? `<div class="totais"><span>Valor a receber${r.estimadoReceber ? " (estimado)" : ""}</span><span>${brl(r.valorAReceber)}</span></div>` : ""}
+    <div class="totais"><span>Pago</span><span>${brl(r.pagoCobrado)}</span></div>
+    <div class="totais"><span>${r.falta > 0 ? "Falta" : r.falta < 0 ? "Troco" : "&mdash;"}</span><span>${brl(Math.abs(r.falta))}</span></div>`;
 }
 
 // Zera a tela (sem perguntar nada). Usado depois de vender e pelo "Limpar".
@@ -541,8 +572,20 @@ async function limpar() {
   for (const p of pendentes) {
     try {
       const { cobranca } = await clientePoint.cancelar(p.point.cobrancaId);
+      if (cobranca?.status === "processed") {
+        // Foi aprovada na maquininha no mesmo instante: o dinheiro JA foi cobrado.
+        // Nao limpa (perderia o pagamento): a linha passa a "cobrada".
+        marcarAprovada(p, cobranca);
+        renderPags();
+        renderTotais();
+        return toast("Esse pagamento foi aprovado na maquininha antes de cancelar. Finalize a venda ou use Limpar de novo pra estornar.", "warn");
+      }
       if (!cobranca?.final) throw new Error("A cobranca ainda esta aberta na maquininha. Cancele por la e tente de novo.");
     } catch (e) {
+      // O MP so cancela pela API antes de a cobranca chegar na maquininha; depois, so por la.
+      if (e?.codigo === "na_maquininha") {
+        return toast("A cobranca esta aberta na maquininha e so da pra cancelar por la: aperte o X na maquininha e clique em Limpar de novo.", "err");
+      }
       return toast(e?.message || "Nao foi possivel cancelar a cobranca em andamento.", "err");
     }
   }
@@ -556,7 +599,7 @@ async function finalizar() {
   const { subtotal, desconto, total, pago } = calc();
   if (total < 0) return toast("Desconto maior que o subtotal.", "err");
   if (round2(pago) !== total)
-    return toast(`Pagamentos (${brl(pago)}) diferentes do total (${brl(total)}).`, "err");
+    return toast(`Os valores das formas de pagamento somam ${brl(pago)}, mas o valor original da venda e ${brl(total)}.`, "err");
   const temDinheiro = pagamentos.some((p) => p.forma === "dinheiro" && p.valor > 0);
   if (temDinheiro && !caixaAbertoId)
     return toast("Abra o caixa para receber em dinheiro.", "err");

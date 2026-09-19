@@ -90,6 +90,51 @@ function montarOrderPoint({ cobrancaId, tipo, valor, parcelas, quemPagaJuros, te
   };
 }
 
+// O MP aceita o nome do campo de "quem paga o juros" em UM dos dois formatos
+// (a doc usa os dois). Se recusar o primeiro com um 400 que fala desse
+// campo, tentamos o outro UMA vez — assim o primeiro teste real não depende
+// de saber qual está certo. Devolve o corpo com o nome trocado, ou null se
+// o erro não tem a ver com isso.
+const NOMES_QUEM_PAGA_JUROS = ["installments_cost", "default_installments_cost"];
+
+function trocarCampoQuemPagaJuros(corpo, erro) {
+  if (!erro || erro.mpStatus !== 400) return null;
+  const pm = corpo && corpo.config && corpo.config.payment_method;
+  if (!pm) return null;
+  const atual = NOMES_QUEM_PAGA_JUROS.find((nome) => nome in pm);
+  if (!atual) return null;
+  const texto = `${JSON.stringify(erro.detalhe || "")} ${erro.message || ""}`;
+  if (!new RegExp(atual, "i").test(texto)) return null; // o erro não fala desse campo
+  const outro = NOMES_QUEM_PAGA_JUROS.find((nome) => nome !== atual);
+  const { [atual]: valor, ...resto } = pm;
+  return { ...corpo, config: { ...corpo.config, payment_method: { ...resto, [outro]: valor } } };
+}
+
+/**
+ * Código do erro que o MP devolveu (ex.: "cannot_cancel_order",
+ * "order_already_canceled"), ou "" se não veio. Os erros do MP chegam em
+ * `errors[0].code`; alguns endpoints usam `code`/`error` na raiz.
+ */
+function codigoErroMp(erro) {
+  const d = erro && erro.detalhe;
+  const primeiro = d && Array.isArray(d.errors) ? d.errors[0] : null;
+  return String((primeiro && primeiro.code) || (d && (d.code || d.error)) || "");
+}
+
+/** Terminais do MP → formato usado pela API/tela (id, modo, loja/caixa) marcando o configurado. */
+function mapearTerminais(resposta, configurado) {
+  const lista = (resposta && ((resposta.data && resposta.data.terminals) || resposta.terminals)) || [];
+  const escolhido = String(configurado || "").trim();
+  return lista.map((t) => ({
+    id: t.id,
+    modo: t.operating_mode || null,
+    loja_id: t.store_id ?? null,
+    caixa_id: t.pos_id ?? null,
+    caixa_externo: t.external_pos_id || null,
+    selecionado: Boolean(escolhido) && t.id === escolhido
+  }));
+}
+
 function primeiroPagamento(order) {
   const lista = order && order.transactions && order.transactions.payments;
   return Array.isArray(lista) && lista.length ? lista[0] : null;
@@ -113,6 +158,9 @@ function normalizarOrder(order) {
     payment_ref: pg.reference_id ? String(pg.reference_id) : null,
     status,
     status_detail: (order && order.status_detail) || null,
+    // O motivo de verdade costuma estar no pagamento (ex.: "canceled_on_terminal",
+    // "rejected_by_issuer"); o da order é mais genérico ("canceled", "failed").
+    pagamento_detalhe: pg.status_detail || null,
     final: STATUS_FINAIS.has(status),
     aprovado: status === "processed",
     parcelas: numero(metodo.installments),
@@ -184,6 +232,7 @@ function projetarCobranca(d) {
     cobranca_id: d.cobranca_id,
     status: d.status,
     status_detail: d.status_detail,
+    pagamento_detalhe: d.pagamento_detalhe,
     final: Boolean(d.final),
     aprovado: Boolean(d.aprovado),
     estornada: d.status === "refunded",
@@ -210,6 +259,9 @@ module.exports = {
   round2,
   validarCobranca,
   montarOrderPoint,
+  trocarCampoQuemPagaJuros,
+  codigoErroMp,
+  mapearTerminais,
   primeiroPagamento,
   normalizarOrder,
   extrairTaxas,

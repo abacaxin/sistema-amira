@@ -7,7 +7,7 @@ import {
 } from "../db.js";
 import { brl, round2 } from "../money.js";
 import { derivarItensPedido, contaComoPago } from "../produtos-schema.js";
-import { criarClientePoint } from "../point.js";
+import { criarClientePoint, configPointEfetiva, storageSeguro } from "../point.js";
 
 const CANAIS = { loja: "Loja fisica", site: "Site proprio", mercado_livre: "Mercado Livre", shopee: "Shopee" };
 const FORMAS_LABEL = { dinheiro: "Dinheiro", pix: "Pix", debito: "Debito", credito: "Credito", crediario: "Crediario" };
@@ -23,8 +23,9 @@ const formasPagamento = config.formas_pagamento?.length
 
 // Estorno de venda paga na maquininha. Nao depende de point.ativo: mesmo com a
 // maquininha desligada, uma venda antiga paga nela ainda precisa poder ser estornada.
+// (No "teste local" do PDV, o estorno tambem vai pra API local.)
 const clientePoint = criarClientePoint({
-  apiBase: config.point?.api_url || "",
+  apiBase: configPointEfetiva(config.point, storageSeguro()).api_url,
   obterToken: () => auth.currentUser.getIdToken(),
 });
 const pagamentosPoint = (v) => (v.pagamentos || []).filter((p) => p.point?.cobranca_id && p.point?.status === "processed");

@@ -4,7 +4,7 @@ import { auth } from "../firebase.js";
 import { db, doc, getDoc, setDoc, updateDoc, serverTimestamp } from "../db.js";
 import { parseNum } from "../money.js";
 import { FORMAS_JUROS } from "../juros.js";
-import { criarClientePoint } from "../point.js";
+import { criarClientePoint, storageSeguro, lerTesteLocal, ativarTesteLocal, desativarTesteLocal } from "../point.js";
 
 const BASES = ["total", "total_sem_desconto", "margem"];
 const FORMA_LABEL = { credito: "Crédito", crediario: "Crediário", debito: "Débito" };
@@ -77,13 +77,26 @@ root.innerHTML = `
     <p class="muted">Cobra crédito e débito direto na maquininha pelo PDV e traz a taxa real de cada venda. Precisa da API (Vercel) no ar e da maquininha em modo PDV — passo a passo no README, seção "Maquininha Mercado Pago Point".</p>
     <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-ativo" ${point.ativo === true ? "checked" : ""} style="width:auto"> Usar a maquininha no PDV (botão "Cobrar na maquininha")</label>
     <label style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink)"><input type="checkbox" id="point-obrigatorio" ${point.obrigatorio === true ? "checked" : ""} style="width:auto"> Exigir a maquininha em crédito e débito (não deixa registrar cartão manualmente)</label>
-    <label>URL da API (deixe vazio se a API estiver no mesmo domínio do sistema)</label>
-    <input id="point-api" value="${escapeHtml(point.api_url ?? "")}" placeholder="https://sistema-amira-api.vercel.app">
+    <label>URL da API publicada (deixe vazio se a API estiver no mesmo domínio do sistema)</label>
+    <input id="point-api" value="${escapeHtml(point.api_url ?? "")}" placeholder="https://SEU-PROJETO.vercel.app">
+    <p class="muted" style="margin:6px 0 0">Esta é a URL da API <strong>publicada</strong> (Vercel) e vale pra todos os usuários; o exemplo acima é só um modelo. Testando no seu computador? Use o bloco <strong>“Teste só neste computador”</strong> logo abaixo, que já vem com <code>http://localhost:3001</code> e não altera isto.</p>
     <div class="row" style="margin-top:12px">
       <div style="flex:0 0 auto"><button class="btn" id="salvar-point">Salvar maquininha</button></div>
       <div style="flex:0 0 auto"><button class="btn ghost" id="testar-point">Testar conexão</button></div>
     </div>
     <div id="point-terminais" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <strong>Teste só neste computador</strong>
+    <p class="muted">Liga a maquininha <em>só neste navegador</em>, usando a API que roda no seu computador (<code>npm run api:dev</code>). Não muda nada pros outros usuários nem a configuração acima. Ideal pro primeiro teste. As vendas feitas assim são <strong>reais</strong> (gravam no sistema e baixam o estoque): use um valor pequeno e cancele depois em Vendas.</p>
+    <label>URL da API local</label>
+    <input id="point-local-url" value="http://localhost:3001" placeholder="http://localhost:3001" autocomplete="off">
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><button class="btn" id="point-local-ativar">Ativar teste local</button></div>
+      <div style="flex:0 0 auto"><button class="btn ghost" id="point-local-desativar">Desativar</button></div>
+    </div>
+    <p id="point-local-status" class="muted" style="margin-top:10px"></p>
   </div>
 
   <div class="card">
@@ -246,63 +259,135 @@ document.getElementById("salvar-point").onclick = async () => {
   toast("Maquininha salva.", "ok");
 };
 
-// Testa com a URL que esta no campo (nao a salva) — da pra conferir antes de gravar.
+// Onde o teste vai bater: com o "teste local" ligado, na API local; senao na URL do campo
+// (ainda nao salva — da pra conferir antes de gravar).
+const storage = storageSeguro();
+function baseDaApi() {
+  const local = lerTesteLocal(storage);
+  return local ? local.api_url : document.getElementById("point-api").value.trim().replace(/\/+$/, "");
+}
 function clientePointDaTela() {
   return criarClientePoint({
-    apiBase: document.getElementById("point-api").value.trim(),
+    apiBase: baseDaApi(),
     obterToken: () => auth.currentUser.getIdToken(),
   });
 }
 
-async function listarTerminais() {
+const ROTULO_CHECK = { ok: "OK", aviso: "Atenção", erro: "Falta" };
+
+function htmlChecklist(d) {
+  return `
+    <ul class="pt-checks">${d.checks
+      .map(
+        (c) => `<li class="pt-check ${escapeHtml(c.nivel)}">
+          <span class="pt-check-tag">${ROTULO_CHECK[c.nivel] || escapeHtml(c.nivel)}</span>
+          <div>
+            <strong>${escapeHtml(c.titulo)}</strong>
+            <div>${escapeHtml(c.detalhe)}</div>
+            ${c.acao ? `<div class="muted">→ ${escapeHtml(c.acao)}</div>` : ""}
+          </div>
+        </li>`
+      )
+      .join("")}</ul>
+    <p class="${d.ok ? "pt-ok" : "pt-erro"}">${
+      d.ok ? "Tudo pronto pra cobrar." : "Ainda faltam ajustes — resolva os itens marcados como “Falta”."
+    }</p>`;
+}
+
+function htmlTerminais(d) {
+  if (!d.terminais.length) return "";
+  return `
+    <div class="tabela-wrap"><table>
+      <thead><tr><th>Terminal</th><th>Modo</th><th></th></tr></thead>
+      <tbody>${d.terminais
+        .map(
+          (t) => `<tr>
+          <td><code>${escapeHtml(t.id)}</code>${t.selecionado ? ` <span class="tag ativo">em uso</span>` : ""}${t.caixa_externo ? `<div class="muted">caixa ${escapeHtml(String(t.caixa_externo))}</div>` : ""}</td>
+          <td>${t.modo === "PDV" ? `<span class="tag ativo">PDV</span>` : `<span class="tag sem_estoque">${escapeHtml(t.modo || "?")}</span>`}</td>
+          <td class="right">${
+            t.modo === "PDV"
+              ? `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="STANDALONE">Voltar ao modo autônomo</button>`
+              : `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="PDV">Colocar em modo PDV</button>`
+          }</td>
+        </tr>`
+        )
+        .join("")}</tbody>
+    </table></div>
+    <p class="muted" style="margin-top:8px">Modo PDV: a maquininha espera as cobranças do sistema. Modo autônomo: funciona sozinha, como uma maquininha comum (use se o sistema ou a internet cair).</p>`;
+}
+
+// Explica a falha em vez de so repetir a mensagem crua.
+function htmlFalha(e, base) {
+  const onde = base ? `<code>${escapeHtml(base)}</code>` : "a API deste site";
+  let dica;
+  if (e?.rede) {
+    // O navegador esconde do JS o motivo real (API fora do ar e CORS bloqueado parecem iguais), entao o hint cobre os dois.
+    dica = `Não consegui falar com ${onde}. Confira se ela está no ar (no teste local, rode <code>npm run api:dev</code> num terminal aberto na pasta do projeto e deixe-o aberto). Se está rodando, o navegador pode estar bloqueando por <strong>CORS</strong>: a origem deste sistema, <code>${escapeHtml(location.origin)}</code>, precisa estar em <code>CORS_ORIGINS</code> no <code>.env</code> da API (ou deixe a variável vazia); reinicie a API depois de mudar. O detalhe exato aparece no console do navegador (F12).`;
+  } else if (e?.status === 401) {
+    dica = `A API não aceitou o seu login. Confira se a service account (<code>FIREBASE_SERVICE_ACCOUNT</code> ou o <code>serviceAccount.json</code>) é do projeto <code>flora-5754a</code> — a mesma conta que entra aqui — e entre de novo no sistema.`;
+  } else if (e?.status === 403) {
+    dica = `Só administradores podem testar a conexão.`;
+  } else if (!base) {
+    dica = `A URL da API está vazia, então procurei neste mesmo endereço e não há API aqui. Se a API está no seu computador, ative o <strong>“Teste só neste computador”</strong> logo abaixo (<code>http://localhost:3001</code>). Se está na Vercel, preencha a URL dela no campo acima.`;
+  } else if (e?.status === 404) {
+    dica = `Não encontrei a rota de diagnóstico em ${onde}. Confira se essa é mesmo a URL da API do sistema e se a versão publicada é a mais nova.`;
+  } else {
+    dica = `Confira a URL da API e se ela está no ar.`;
+  }
+  return `<p style="color:var(--err)">${escapeHtml(e?.message || "Falha ao consultar.")}</p><p class="muted">${dica}</p>`;
+}
+
+async function testarConexao() {
   const box = document.getElementById("point-terminais");
-  box.innerHTML = `<p class="muted">Consultando o Mercado Pago…</p>`;
+  const base = baseDaApi();
+  box.innerHTML = `<p class="muted">Consultando ${base ? `<code>${escapeHtml(base)}</code>` : "a API deste site"}…</p>`;
   try {
-    const r = await clientePointDaTela().terminais();
-    if (!r.terminais.length) {
-      box.innerHTML = `<p class="muted">Conexão ok, mas o Mercado Pago não listou nenhum terminal nessa conta. Vincule a maquininha pelo app do Mercado Pago (loja + caixa) e tente de novo.</p>`;
-      return;
+    const d = await clientePointDaTela().diagnostico();
+    // Um servidor qualquer (ex.: o proprio site devolvendo uma pagina) pode responder 200 sem ser a nossa API.
+    if (!d || !Array.isArray(d.checks)) {
+      throw Object.assign(new Error("A resposta não parece ser da API da maquininha."), { status: 404 });
     }
-    box.innerHTML = `
-      <p class="muted">${
-        r.configurado
-          ? `Terminal configurado no servidor (<code>MP_POINT_TERMINAL_ID</code>): <code>${escapeHtml(r.configurado)}</code>`
-          : `O servidor ainda não tem <code>MP_POINT_TERMINAL_ID</code> — copie o id do terminal abaixo pra variável na Vercel.`
-      }</p>
-      <div class="tabela-wrap"><table>
-        <thead><tr><th>Terminal</th><th>Modo</th><th></th></tr></thead>
-        <tbody>${r.terminais
-          .map((t) => `<tr>
-            <td><code>${escapeHtml(t.id)}</code>${t.selecionado ? ` <span class="tag ativo">em uso</span>` : ""}${t.caixa_externo ? `<div class="muted">caixa ${escapeHtml(String(t.caixa_externo))}</div>` : ""}</td>
-            <td>${t.modo === "PDV" ? `<span class="tag ativo">PDV</span>` : `<span class="tag sem_estoque">${escapeHtml(t.modo || "?")}</span>`}</td>
-            <td class="right">${
-              t.modo === "PDV"
-                ? `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="STANDALONE">Voltar ao modo autônomo</button>`
-                : `<button class="btn ghost pt-modo" data-id="${escapeHtml(t.id)}" data-modo="PDV">Colocar em modo PDV</button>`
-            }</td>
-          </tr>`)
-          .join("")}</tbody>
-      </table></div>
-      <p class="muted" style="margin-top:8px">Modo PDV: a maquininha espera as cobranças do sistema. Modo autônomo: funciona sozinha, como uma maquininha comum (use se o sistema ou a internet cair).</p>`;
+    box.innerHTML = htmlChecklist(d) + htmlTerminais(d);
     box.querySelectorAll(".pt-modo").forEach((b) => {
       b.onclick = async () => {
         b.disabled = true;
         try {
           await clientePointDaTela().definirModo(b.dataset.id, b.dataset.modo);
           toast(b.dataset.modo === "PDV" ? "Maquininha em modo PDV." : "Maquininha em modo autônomo.", "ok");
-          listarTerminais();
-        } catch (e) {
+          testarConexao();
+        } catch (err) {
           b.disabled = false;
-          toast(e?.message || "Não foi possível trocar o modo.", "err");
+          toast(err?.message || "Não foi possível trocar o modo.", "err");
         }
       };
     });
   } catch (e) {
-    box.innerHTML = `<p style="color:var(--err)">${escapeHtml(e?.message || "Falha ao consultar.")}</p>
-      <p class="muted">Confira a URL da API, se ela está no ar e se as variáveis (<code>MP_ACCESS_TOKEN</code>, <code>FIREBASE_SERVICE_ACCOUNT</code>) estão na Vercel.</p>`;
+    box.innerHTML = htmlFalha(e, base);
   }
 }
-document.getElementById("testar-point").onclick = listarTerminais;
+document.getElementById("testar-point").onclick = testarConexao;
+
+// ── Teste local (so neste navegador) ─────────────────────────────────────
+function atualizarStatusLocal() {
+  const local = lerTesteLocal(storage);
+  document.getElementById("point-local-status").innerHTML = local
+    ? `<span class="tag ativo">ATIVO</span> Neste navegador, o PDV e as Vendas usam a API em <code>${escapeHtml(local.api_url)}</code>. Tem uma faixa amarela no PDV avisando.`
+    : `Desativado — este navegador usa a configuração do sistema (acima).`;
+  document.getElementById("point-local-desativar").disabled = !local;
+  if (local) document.getElementById("point-local-url").value = local.api_url;
+}
+document.getElementById("point-local-ativar").onclick = () => {
+  const r = ativarTesteLocal(storage, document.getElementById("point-local-url").value);
+  if (!r.ok) return toast(r.erro, "err");
+  toast("Teste local ativado neste navegador.", "ok");
+  atualizarStatusLocal();
+};
+document.getElementById("point-local-desativar").onclick = () => {
+  desativarTesteLocal(storage);
+  toast("Teste local desativado.", "ok");
+  atualizarStatusLocal();
+};
+atualizarStatusLocal();
 
 document.getElementById("salvar-ind").onclick = async () => {
   await setDoc(

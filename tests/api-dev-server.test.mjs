@@ -249,6 +249,20 @@ test("banner: sinaliza o que falta e sugere o comando pra resolver", () => {
   assert.match(texto, /ERRO: FIREBASE_SERVICE_ACCOUNT não configurada/);
 });
 
+test("banner: linha de CORS diz se o sistema local foi liberado (padrão / liberado sozinho / já estava)", () => {
+  const banner = (env, corsAdicionadas) =>
+    linhasDoBanner({ url: "u", env, firebase: FIREBASE_OK, envCarregado: true, corsAdicionadas }).join("\n");
+
+  assert.match(banner({}, []), /CORS_ORIGINS\.+ padrão \(já libera http:\/\/localhost:5173\)/);
+  assert.match(
+    banner({ CORS_ORIGINS: "https://sistema-amira.vercel.app, http://localhost:5173" }, ["http://localhost:5173"]),
+    /CORS_ORIGINS\.+ o \.env limitava a outras origens; liberei também http:\/\/localhost:5173/
+  );
+  assert.match(banner({ CORS_ORIGINS: "http://localhost:5173" }, []), /CORS_ORIGINS\.+ ok \(http:\/\/localhost:5173 liberado\)/);
+  // sem o parâmetro novo (chamadas antigas) continua funcionando
+  assert.match(linhasDoBanner({ url: "u", env: {}, firebase: FIREBASE_OK, envCarregado: true }).join("\n"), /CORS_ORIGINS/);
+});
+
 test("banner: credencial de teste (TEST-) é avisada", () => {
   const texto = linhasDoBanner({ url: "u", env: { MP_ACCESS_TOKEN: "TEST-123" }, firebase: FIREBASE_OK, envCarregado: true }).join("\n");
   assert.match(texto, /credencial de TESTE/);

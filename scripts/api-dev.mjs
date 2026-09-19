@@ -16,6 +16,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { carregarEnv } from "./lib/env.mjs";
+import { liberarFrontLocal, ORIGENS_FRONT_LOCAL } from "./lib/cors-local.mjs";
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LIMITE_CORPO = 1024 * 1024; // as requisições daqui têm poucos bytes
@@ -120,12 +121,19 @@ export function criarServidor(rotas, { log = () => {} } = {}) {
 /**
  * Texto de abertura: o que está configurado (só se está ou não — nunca o
  * valor de segredo) e o que fazer a seguir.
- * @param {{url:string, env:object, firebase:{ok:boolean, projectId?:string, mensagem?:string}, envCarregado:boolean}} p
+ * @param {{url:string, env:object, firebase:{ok:boolean, projectId?:string, mensagem?:string}, envCarregado:boolean, corsAdicionadas?:string[]}} p
+ *   corsAdicionadas: origens do sistema local que o .env não tinha e foram liberadas (ver lib/cors-local.mjs)
  */
-export function linhasDoBanner({ url, env, firebase, envCarregado }) {
+export function linhasDoBanner({ url, env, firebase, envCarregado, corsAdicionadas = [] }) {
   const token = String(env.MP_ACCESS_TOKEN || "").trim();
   const terminal = String(env.MP_POINT_TERMINAL_ID || "").trim();
   const item = (nome, texto) => `  ${nome.padEnd(22, ".")} ${texto}`;
+  const sistemaLocal = ORIGENS_FRONT_LOCAL[0];
+  const cors = !String(env.CORS_ORIGINS || "").trim()
+    ? `padrão (já libera ${sistemaLocal})`
+    : corsAdicionadas.length
+      ? `o .env limitava a outras origens; liberei também ${sistemaLocal}`
+      : `ok (${sistemaLocal} liberado)`;
 
   return [
     `API local da maquininha em ${url}  (só este computador acessa)`,
@@ -137,6 +145,7 @@ export function linhasDoBanner({ url, env, firebase, envCarregado }) {
     item("MP_POINT_TERMINAL_ID", terminal || "FALTANDO  (npm run point:check -- --gravar preenche)"),
     item("MP_WEBHOOK_SECRET", String(env.MP_WEBHOOK_SECRET || "").trim() ? "configurada" : "não configurada (ok pros primeiros testes)"),
     item("Firebase", firebase.ok ? `projeto ${firebase.projectId}` : `ERRO: ${firebase.mensagem}`),
+    item("CORS_ORIGINS", cors),
     "",
     "Conferir tudo de uma vez:  npm run point:check",
     "Ctrl+C para parar."
@@ -146,6 +155,9 @@ export function linhasDoBanner({ url, env, firebase, envCarregado }) {
 async function main() {
   const porta = Number(process.env.API_DEV_PORT) || 3001;
   const { carregado } = carregarEnv({ arquivo: path.join(RAIZ, ".env") });
+  // Um CORS_ORIGINS do .env substitui a lista padrão e deixaria o sistema local
+  // (http://localhost:5173) bloqueado pelo navegador: garante que ele está lá.
+  const { adicionadas: corsAdicionadas } = liberarFrontLocal(process.env);
 
   // Só agora (e não no topo do arquivo) carrega o firebase-admin & cia:
   // importar este módulo nos testes não puxa nada disso.
@@ -170,7 +182,7 @@ async function main() {
   });
   servidor.listen(porta, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${porta}`;
-    console.log(linhasDoBanner({ url, env: process.env, firebase, envCarregado: carregado }).join("\n"));
+    console.log(linhasDoBanner({ url, env: process.env, firebase, envCarregado: carregado, corsAdicionadas }).join("\n"));
   });
 }
 

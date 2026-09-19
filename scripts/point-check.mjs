@@ -15,6 +15,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { carregarEnv, gravarChaveNoArquivo } from "./lib/env.mjs";
+import { liberarFrontLocal } from "./lib/cors-local.mjs";
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exigir = createRequire(import.meta.url);
@@ -205,6 +206,7 @@ export async function executarCheck({
 async function main() {
   const arquivoEnv = path.join(RAIZ, ".env");
   const { carregado } = carregarEnv({ arquivo: arquivoEnv });
+  liberarFrontLocal(process.env); // mesma regra do api:dev, pra a linha de CORS mostrar o que vale de verdade
   const mp = exigir("../api/_lib/mercadopago.js");
   const { checarFirebase } = exigir("../api/_lib/firebase-admin.js");
   const cor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;

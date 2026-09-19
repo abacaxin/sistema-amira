@@ -465,6 +465,7 @@ Se algo falhar, o `point:check` e o **Testar conexao** dizem o que:
 | "nenhum terminal" | maquininha nao vinculada a loja/caixa | vincule pelo app do MP (QR Code no terminal) |
 | terminal em modo `STANDALONE` | maquininha em modo autonomo | `--colocar-pdv`, ou o botao em Configuracoes; reinicie a maquininha se nao mudar |
 | Testar conexao: "Sem conexao" | `api:dev` fechado ou porta diferente | rode `npm run api:dev` e deixe aberto |
+| "Sem conexao" mas o `api:dev` esta rodando (no console do navegador, F12: `No 'Access-Control-Allow-Origin'`) | CORS: um `CORS_ORIGINS` no `.env` substitui a lista padrao e deixa o sistema local de fora | o `api:dev` ja libera `http://localhost:5173` sozinho (reinicie-o e veja a linha `CORS_ORIGINS` no banner); se abrir o sistema em outra porta, ponha essa origem em `CORS_ORIGINS` |
 | Testar conexao: "URL da API esta vazia" | nenhum teste local ativo e o campo da URL vazio | ative o *Teste so neste computador* (ou preencha a URL publicada) |
 | Testar conexao: "nao aceitou o seu login" | service account de outro projeto | use a chave do `flora-5754a` e entre de novo |
 | "cobranca pendente na maquininha" | ja existe uma cobranca aberta la | conclua ou cancele na propria maquininha |

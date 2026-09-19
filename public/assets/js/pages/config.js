@@ -321,7 +321,8 @@ function htmlFalha(e, base) {
   const onde = base ? `<code>${escapeHtml(base)}</code>` : "a API deste site";
   let dica;
   if (e?.rede) {
-    dica = `Não consegui falar com ${onde}. Ela está no ar? No teste local, rode <code>npm run api:dev</code> num terminal aberto na pasta do projeto e deixe-o aberto.`;
+    // O navegador esconde do JS o motivo real (API fora do ar e CORS bloqueado parecem iguais), entao o hint cobre os dois.
+    dica = `Não consegui falar com ${onde}. Confira se ela está no ar (no teste local, rode <code>npm run api:dev</code> num terminal aberto na pasta do projeto e deixe-o aberto). Se está rodando, o navegador pode estar bloqueando por <strong>CORS</strong>: a origem deste sistema, <code>${escapeHtml(location.origin)}</code>, precisa estar em <code>CORS_ORIGINS</code> no <code>.env</code> da API (ou deixe a variável vazia); reinicie a API depois de mudar. O detalhe exato aparece no console do navegador (F12).`;
   } else if (e?.status === 401) {
     dica = `A API não aceitou o seu login. Confira se a service account (<code>FIREBASE_SERVICE_ACCOUNT</code> ou o <code>serviceAccount.json</code>) é do projeto <code>flora-5754a</code> — a mesma conta que entra aqui — e entre de novo no sistema.`;
   } else if (e?.status === 403) {

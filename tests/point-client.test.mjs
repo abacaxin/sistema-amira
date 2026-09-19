@@ -11,7 +11,14 @@ import {
   pagamentoDaMaquininha,
   marcarAprovada,
   novoCobrancaId,
-  TIPO_POINT
+  TIPO_POINT,
+  CHAVE_TESTE_LOCAL,
+  urlLocalValida,
+  storageSeguro,
+  lerTesteLocal,
+  ativarTesteLocal,
+  desativarTesteLocal,
+  configPointEfetiva
 } from "../public/assets/js/point.js";
 
 // ── fetch falso ──
@@ -298,4 +305,109 @@ test("marcarAprovada guarda o que a cobrança informou e ajusta as parcelas da l
 
 test("TIPO_POINT: só crédito e débito passam pela maquininha", () => {
   assert.deepEqual(TIPO_POINT, { credito: "credit_card", debito: "debit_card" });
+});
+
+test("cliente: diagnostico chama GET /api/point/diagnostico com o token", async () => {
+  const f = fetchFalso([{ status: 200, corpo: { ok: true, checks: [], terminais: [] } }]);
+  const r = await cliente(f, "http://localhost:3001").diagnostico();
+  assert.equal(r.ok, true);
+  assert.equal(f.chamadas[0].url, "http://localhost:3001/api/point/diagnostico");
+  assert.equal(f.chamadas[0].method, "GET");
+  assert.equal(f.chamadas[0].headers.Authorization, "Bearer TOKEN-DE-TESTE");
+});
+
+// ── Teste local (só neste navegador) ──
+const storageFalso = (inicial = {}) => {
+  const dados = new Map(Object.entries(inicial));
+  return {
+    getItem: (k) => (dados.has(k) ? dados.get(k) : null),
+    setItem: (k, v) => void dados.set(k, String(v)),
+    removeItem: (k) => void dados.delete(k),
+    dados
+  };
+};
+const storageQueExplode = () => ({
+  getItem: () => { throw new Error("SecurityError"); },
+  setItem: () => { throw new Error("QuotaExceededError"); },
+  removeItem: () => { throw new Error("SecurityError"); }
+});
+
+test("urlLocalValida: só o próprio computador (localhost / 127.0.0.1, http, porta opcional)", () => {
+  assert.equal(urlLocalValida("http://localhost:3001"), "http://localhost:3001");
+  assert.equal(urlLocalValida("  http://127.0.0.1:3001///  "), "http://127.0.0.1:3001");
+  assert.equal(urlLocalValida("http://localhost"), "http://localhost");
+  for (const ruim of [
+    "", null, undefined, "localhost:3001", "https://localhost:3001",
+    "http://api.exemplo.app", "http://localhost.evil.com", "http://evil.com/localhost",
+    "http://localhost:3001@evil.com", "http://127.0.0.1.evil.com:3001", "http://localhost:3001/api",
+    "http://192.168.0.10:3001", "http://0.0.0.0:3001", "javascript:alert(1)"
+  ]) {
+    assert.equal(urlLocalValida(ruim), "", `deveria recusar: ${ruim}`);
+  }
+});
+
+test("configPointEfetiva: sem teste local devolve a config do sistema normalizada", () => {
+  const st = storageFalso();
+  assert.deepEqual(configPointEfetiva({ ativo: true, obrigatorio: true, api_url: "https://api.app/" }, st), {
+    ativo: true, obrigatorio: true, api_url: "https://api.app", testeLocal: false
+  });
+  assert.deepEqual(configPointEfetiva(undefined, st), { ativo: false, obrigatorio: false, api_url: "", testeLocal: false });
+  assert.equal(configPointEfetiva({ ativo: "true" }, st).ativo, false, "só o booleano true liga");
+});
+
+test("configPointEfetiva: teste local ligado sobrepõe tudo, liga a maquininha e nunca é obrigatório", () => {
+  const st = storageFalso();
+  assert.equal(ativarTesteLocal(st, "http://localhost:3001").ok, true);
+  const cfg = configPointEfetiva({ ativo: false, obrigatorio: true, api_url: "https://api.app" }, st);
+  assert.deepEqual(cfg, { ativo: true, obrigatorio: false, api_url: "http://localhost:3001", testeLocal: true });
+});
+
+test("ativarTesteLocal / desativarTesteLocal: grava só o necessário e volta ao normal", () => {
+  const st = storageFalso();
+  const r = ativarTesteLocal(st, "http://127.0.0.1:3001/");
+  assert.deepEqual(r, { ok: true, api_url: "http://127.0.0.1:3001" });
+  assert.deepEqual(JSON.parse(st.dados.get(CHAVE_TESTE_LOCAL)), { ativo: true, api_url: "http://127.0.0.1:3001" });
+  assert.deepEqual(lerTesteLocal(st), { api_url: "http://127.0.0.1:3001" });
+
+  assert.equal(desativarTesteLocal(st), true);
+  assert.equal(lerTesteLocal(st), null);
+  assert.equal(configPointEfetiva({ ativo: false }, st).testeLocal, false);
+});
+
+test("ativarTesteLocal: recusa URL de fora sem gravar nada", () => {
+  const st = storageFalso();
+  const r = ativarTesteLocal(st, "https://api.exemplo.app");
+  assert.equal(r.ok, false);
+  assert.match(r.erro, /deste computador/);
+  assert.equal(st.dados.size, 0);
+});
+
+test("teste local guardado com URL adulterada ou lixo é ignorado (o token de login não vaza pra fora)", () => {
+  for (const bruto of [
+    JSON.stringify({ ativo: true, api_url: "https://evil.example" }),
+    JSON.stringify({ ativo: true, api_url: "http://localhost:3001@evil.example" }),
+    JSON.stringify({ ativo: false, api_url: "http://localhost:3001" }),
+    JSON.stringify({ api_url: "http://localhost:3001" }),
+    "isto não é json", "null", "42", ""
+  ]) {
+    const st = storageFalso({ [CHAVE_TESTE_LOCAL]: bruto });
+    assert.equal(lerTesteLocal(st), null, bruto);
+    assert.equal(configPointEfetiva({ ativo: false }, st).testeLocal, false, bruto);
+  }
+});
+
+test("storage bloqueado pelo navegador: nada estoura e o sistema segue com a config normal", () => {
+  const st = storageQueExplode();
+  assert.equal(lerTesteLocal(st), null);
+  assert.equal(configPointEfetiva({ ativo: true, api_url: "https://a.app" }, st).api_url, "https://a.app");
+  const r = ativarTesteLocal(st, "http://localhost:3001");
+  assert.equal(r.ok, false);
+  assert.match(r.erro, /não deixou guardar/);
+  assert.equal(desativarTesteLocal(st), false);
+  assert.equal(lerTesteLocal(null), null);
+  assert.equal(desativarTesteLocal(null), true);
+});
+
+test("storageSeguro: sem localStorage (Node) devolve null em vez de estourar", () => {
+  assert.equal(storageSeguro(), null);
 });

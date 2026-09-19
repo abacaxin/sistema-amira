@@ -90,6 +90,40 @@ function montarOrderPoint({ cobrancaId, tipo, valor, parcelas, quemPagaJuros, te
   };
 }
 
+// O MP aceita o nome do campo de "quem paga o juros" em UM dos dois formatos
+// (a doc usa os dois). Se recusar o primeiro com um 400 que fala desse
+// campo, tentamos o outro UMA vez — assim o primeiro teste real não depende
+// de saber qual está certo. Devolve o corpo com o nome trocado, ou null se
+// o erro não tem a ver com isso.
+const NOMES_QUEM_PAGA_JUROS = ["installments_cost", "default_installments_cost"];
+
+function trocarCampoQuemPagaJuros(corpo, erro) {
+  if (!erro || erro.mpStatus !== 400) return null;
+  const pm = corpo && corpo.config && corpo.config.payment_method;
+  if (!pm) return null;
+  const atual = NOMES_QUEM_PAGA_JUROS.find((nome) => nome in pm);
+  if (!atual) return null;
+  const texto = `${JSON.stringify(erro.detalhe || "")} ${erro.message || ""}`;
+  if (!new RegExp(atual, "i").test(texto)) return null; // o erro não fala desse campo
+  const outro = NOMES_QUEM_PAGA_JUROS.find((nome) => nome !== atual);
+  const { [atual]: valor, ...resto } = pm;
+  return { ...corpo, config: { ...corpo.config, payment_method: { ...resto, [outro]: valor } } };
+}
+
+/** Terminais do MP → formato usado pela API/tela (id, modo, loja/caixa) marcando o configurado. */
+function mapearTerminais(resposta, configurado) {
+  const lista = (resposta && ((resposta.data && resposta.data.terminals) || resposta.terminals)) || [];
+  const escolhido = String(configurado || "").trim();
+  return lista.map((t) => ({
+    id: t.id,
+    modo: t.operating_mode || null,
+    loja_id: t.store_id ?? null,
+    caixa_id: t.pos_id ?? null,
+    caixa_externo: t.external_pos_id || null,
+    selecionado: Boolean(escolhido) && t.id === escolhido
+  }));
+}
+
 function primeiroPagamento(order) {
   const lista = order && order.transactions && order.transactions.payments;
   return Array.isArray(lista) && lista.length ? lista[0] : null;
@@ -210,6 +244,8 @@ module.exports = {
   round2,
   validarCobranca,
   montarOrderPoint,
+  trocarCampoQuemPagaJuros,
+  mapearTerminais,
   primeiroPagamento,
   normalizarOrder,
   extrairTaxas,

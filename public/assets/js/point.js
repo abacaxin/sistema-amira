@@ -59,7 +59,88 @@ export function criarClientePoint({ apiBase = "", obterToken, fetchImpl }) {
     cancelar: (id) => chamar("/api/point/cancelar", { metodo: "POST", corpo: { cobrancaId: id } }),
     estornar: (id) => chamar("/api/point/estornar", { metodo: "POST", corpo: { cobrancaId: id } }),
     terminais: () => chamar("/api/point/terminais"),
-    definirModo: (terminalId, modo) => chamar("/api/point/terminais", { metodo: "POST", corpo: { terminalId, modo } })
+    definirModo: (terminalId, modo) => chamar("/api/point/terminais", { metodo: "POST", corpo: { terminalId, modo } }),
+    // Checklist do que falta pra cobrar (token, Firebase, terminal, modo PDV) — só admin.
+    diagnostico: () => chamar("/api/point/diagnostico")
+  };
+}
+
+// ── Teste local (só neste navegador) ────────────────────────────────────
+// Liga a maquininha SÓ neste computador, apontando pra API que roda nele
+// (npm run api:dev), sem mexer na configuração do sistema — que vale pra
+// todo mundo e é gravada no Firestore. Fica no localStorage deste navegador.
+export const CHAVE_TESTE_LOCAL = "amira.point.local";
+
+/**
+ * Só aceita a API no PRÓPRIO computador (localhost / 127.0.0.1): o ID token
+ * de quem está logado vai junto em toda chamada, então esse atalho nunca
+ * pode apontar pra outro servidor. Devolve a URL limpa ou "".
+ */
+export function urlLocalValida(url) {
+  const s = String(url ?? "").trim().replace(/\/+$/, "");
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(s) ? s : "";
+}
+
+/** localStorage, ou null se o navegador bloqueou (janela anônima, dados do site desligados). */
+export function storageSeguro() {
+  try {
+    return globalThis.localStorage || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** O teste local deste navegador ({ api_url }) ou null se está desligado/inválido. */
+export function lerTesteLocal(storage) {
+  try {
+    const bruto = storage && storage.getItem(CHAVE_TESTE_LOCAL);
+    if (!bruto) return null;
+    const dados = JSON.parse(bruto);
+    const url = urlLocalValida(dados && dados.api_url);
+    return dados && dados.ativo === true && url ? { api_url: url } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Liga o teste local neste navegador. @returns {{ok:true, api_url:string}|{ok:false, erro:string}} */
+export function ativarTesteLocal(storage, apiUrl) {
+  const url = urlLocalValida(apiUrl);
+  if (!url) {
+    return { ok: false, erro: "A URL precisa ser deste computador, tipo http://localhost:3001 — o teste local só fala com a própria máquina." };
+  }
+  try {
+    storage.setItem(CHAVE_TESTE_LOCAL, JSON.stringify({ ativo: true, api_url: url }));
+    return { ok: true, api_url: url };
+  } catch (_) {
+    return { ok: false, erro: "Este navegador não deixou guardar o teste local (janela anônima ou dados do site bloqueados)." };
+  }
+}
+
+/** Desliga o teste local. Devolve se conseguiu. */
+export function desativarTesteLocal(storage) {
+  try {
+    if (storage) storage.removeItem(CHAVE_TESTE_LOCAL);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * A configuração da maquininha que vale NESTE navegador: a do sistema
+ * (Configurações → Maquininha) ou, com o teste local ligado, a API local —
+ * sempre NÃO obrigatória, pra um teste nunca travar a venda.
+ * @returns {{ativo:boolean, obrigatorio:boolean, api_url:string, testeLocal:boolean}}
+ */
+export function configPointEfetiva(config, storage) {
+  const local = lerTesteLocal(storage);
+  if (local) return { ativo: true, obrigatorio: false, api_url: local.api_url, testeLocal: true };
+  return {
+    ativo: Boolean(config && config.ativo === true),
+    obrigatorio: Boolean(config && config.obrigatorio === true),
+    api_url: String((config && config.api_url) || "").trim().replace(/\/+$/, ""),
+    testeLocal: false
   };
 }
 

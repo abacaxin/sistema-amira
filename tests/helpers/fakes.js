@@ -178,6 +178,11 @@ function criarMpFalso() {
       talvezFalhar("modo");
       return { terminals: [{ id, operating_mode: modo }] };
     },
+    async usuarioAtual() {
+      registrar("usuario");
+      talvezFalhar("usuario");
+      return { id: 998877, nickname: "LOJA_AMIRA", site_id: "MLB" };
+    },
     async buscarPagamento(id) {
       registrar("pagamento", id);
       talvezFalhar("pagamento");

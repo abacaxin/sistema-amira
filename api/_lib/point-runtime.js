@@ -3,9 +3,9 @@
 // arquivos em api/point/*.js só reexportam um handler daqui. (Os testes
 // usam criarHandlers() direto, com dependências falsas.)
 
-const { getDb, tokenDaRequisicao, exigirStaff, exigirAdmin } = require("./firebase-admin");
+const { getDb, checarFirebase, tokenDaRequisicao, exigirStaff, exigirAdmin } = require("./firebase-admin");
 const { limitar } = require("./limite");
 const mp = require("./mercadopago");
 const { criarHandlers } = require("./point-handlers");
 
-module.exports = criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao });
+module.exports = criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, checarFirebase });

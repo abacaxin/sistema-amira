@@ -9,7 +9,10 @@ import { brl, round2, parseNum } from "../money.js";
 import { calcularComissao } from "../regras.js";
 import { infoPreco, estoquePorModo } from "../produtos-schema.js";
 import { FORMAS_JUROS, FORMAS_PARCELAVEIS, parcelasDisponiveis, taxasDe, infoParcela } from "../juros.js";
-import { TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha } from "../point.js";
+import {
+  TIPO_POINT, criarClientePoint, novoCobrancaId, quemPagaJuros, marcarAprovada, pagamentoDaMaquininha,
+  configPointEfetiva, storageSeguro, desativarTesteLocal,
+} from "../point.js";
 import { cobrarNaMaquininha } from "../point-ui.js";
 
 const { perfil } = await requireAuth();
@@ -26,11 +29,13 @@ const parc = config.parcelamento || { maximo: 12, minimo_parcela: 0, juros: {} }
 // Maquininha Mercado Pago Point (opcional — Configuracoes → Maquininha). Com
 // ela ligada, credito/debito ganham o botao "Cobrar na maquininha"; sem ela
 // (ou com a API fora do ar) o registro manual de cartao continua igual.
-const pointCfg = config.point || {};
+// "Teste local" (Configuracoes → Maquininha) liga a maquininha so NESTE
+// navegador, apontando pra API local — sem mexer na config de todo mundo.
+const pointCfg = configPointEfetiva(config.point, storageSeguro());
 const pointAtivo = pointCfg.ativo === true;
 const pointObrigatorio = pointAtivo && pointCfg.obrigatorio === true;
 const clientePoint = pointAtivo
-  ? criarClientePoint({ apiBase: pointCfg.api_url || "", obterToken: () => auth.currentUser.getIdToken() })
+  ? criarClientePoint({ apiBase: pointCfg.api_url, obterToken: () => auth.currentUser.getIdToken() })
   : null;
 
 // Caixa e UNICO pra loja toda — nao e "do usuario logado". Qualquer
@@ -58,6 +63,12 @@ let carrinho = [];
 let pagamentos = [];
 
 root.innerHTML = `
+  ${pointCfg.testeLocal ? `
+  <div class="pt-banner-local" id="pt-banner-local">
+    <div><strong>TESTE LOCAL da maquininha</strong> — ligada só neste computador, usando a API em <code>${escapeHtml(pointCfg.api_url)}</code>.
+    As vendas feitas aqui são <strong>reais</strong>: gravam no sistema e baixam o estoque.</div>
+    <button class="btn ghost" id="pt-local-off">Desativar teste local</button>
+  </div>` : ""}
   <div class="grid auto">
     <div class="card">
       <strong>Produtos</strong>
@@ -105,6 +116,12 @@ $("#add-pag").onclick = () => {
 };
 $("#limpar").onclick = limpar;
 $("#finalizar").onclick = finalizar;
+if (pointCfg.testeLocal) {
+  $("#pt-local-off").onclick = () => {
+    desativarTesteLocal(storageSeguro());
+    location.reload();
+  };
+}
 
 renderResultados();
 renderCart();

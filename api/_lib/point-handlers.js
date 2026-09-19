@@ -23,11 +23,14 @@ const {
   montarOrderPoint,
   primeiroPagamento,
   normalizarOrder,
+  trocarCampoQuemPagaJuros,
+  mapearTerminais,
   extrairTaxas,
   podeAvancar,
   compactar,
   projetarCobranca
 } = require("./point");
+const { diagnosticar } = require("./point-diagnostico");
 
 const COLECAO = "cobrancas_point";
 const ID_COBRANCA = /^[A-Za-z0-9_-]{8,60}$/;
@@ -68,7 +71,7 @@ function checarAssinatura(req, dataId, env) {
   }
 }
 
-function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, env = process.env, agora = () => new Date() }) {
+function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, checarFirebase, env = process.env, agora = () => new Date() }) {
   const podeMexer = (staff, d) => staff.role === "admin" || d.vendedor_uid === staff.uid;
 
   function idDaQuery(req) {
@@ -180,15 +183,23 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
 
       let order;
       try {
-        order = await mp.criarOrderPoint(
-          montarOrderPoint({
-            ...dados,
-            terminalId,
-            descricao: `Venda Amira ${dados.cobrancaId}`,
-            expiraMin: env.POINT_EXPIRA_MIN
-          }),
-          dados.cobrancaId
-        );
+        const corpoOrder = montarOrderPoint({
+          ...dados,
+          terminalId,
+          descricao: `Venda Amira ${dados.cobrancaId}`,
+          expiraMin: env.POINT_EXPIRA_MIN
+        });
+        try {
+          order = await mp.criarOrderPoint(corpoOrder, dados.cobrancaId);
+        } catch (erro) {
+          // O MP às vezes só aceita o outro nome do campo "quem paga o juros"
+          // (a doc usa os dois): tenta o alternativo UMA vez, com chave nova
+          // porque o corpo mudou.
+          const alternativo = trocarCampoQuemPagaJuros(corpoOrder, erro);
+          if (!alternativo) throw erro;
+          console.warn("[point] o MP recusou o campo de quem paga o juros; tentando o nome alternativo:", erro.message);
+          order = await mp.criarOrderPoint(alternativo, `${dados.cobrancaId}-b`);
+        }
       } catch (erro) {
         await ref.update({ status: "erro", erro: String(erro.message).slice(0, 300), atualizado_em: agora() }).catch(() => {});
         // 409 do MP = a maquininha já tem uma cobrança aberta (só cabe uma).
@@ -314,17 +325,9 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
 
       if (req.method === "GET") {
         const resposta = await mp.listarTerminais();
-        const lista = (resposta && ((resposta.data && resposta.data.terminals) || resposta.terminals)) || [];
         return res.status(200).json({
           configurado: configurado || null,
-          terminais: lista.map((t) => ({
-            id: t.id,
-            modo: t.operating_mode || null,
-            loja_id: t.store_id ?? null,
-            caixa_id: t.pos_id ?? null,
-            caixa_externo: t.external_pos_id || null,
-            selecionado: Boolean(configurado) && t.id === configurado
-          }))
+          terminais: mapearTerminais(resposta, configurado)
         });
       }
 
@@ -337,6 +340,22 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
       }
 
       throw erroHttp(405, "Método não permitido.");
+    } catch (erro) {
+      return responderErro(res, erro);
+    }
+  }
+
+  // ── GET /api/point/diagnostico (só admin) ────────────────────────────
+  // Confere token, Firebase, terminais e modo PDV e diz o que falta (ver
+  // point-diagnostico.js). Devolve 200 mesmo com itens em "erro": o
+  // resultado É o diagnóstico. Só falha (401/403) se o login não passar.
+  async function diagnostico(req, res) {
+    if (aplicarCors(req, res, env)) return;
+    try {
+      if (req.method !== "GET") throw erroHttp(405, "Método não permitido.");
+      await exigirAdmin(tokenDaRequisicao(req));
+      const resultado = await diagnosticar({ env, mp, checarFirebase });
+      return res.status(200).json(resultado);
     } catch (erro) {
       return responderErro(res, erro);
     }
@@ -384,7 +403,7 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
     }
   }
 
-  return { cobrar, status, cancelar, estornar, terminais, webhook };
+  return { cobrar, status, cancelar, estornar, terminais, diagnostico, webhook };
 }
 
 module.exports = { criarHandlers, checarAssinatura, COLECAO };

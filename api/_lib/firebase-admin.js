@@ -16,6 +16,8 @@
 // Admin SDK passa por cima das firestore.rules, então toda função aqui
 // precisa conferir QUEM está chamando (exigirStaff / exigirAdmin).
 
+const fs = require("fs");
+const path = require("path");
 const { initializeApp, getApps, cert } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { verificarIdToken } = require("./id-token");
@@ -24,10 +26,40 @@ const { erroHttp } = require("./http");
 
 let _db = null;
 
-function credenciais() {
-  let bruto = process.env.FIREBASE_SERVICE_ACCOUNT;
+// Só pro desenvolvimento local (npm run api:dev / point:check): sem a env
+// var, usa o mesmo arquivo que os scripts Python já usam — o caminho em
+// GOOGLE_APPLICATION_CREDENTIALS ou o serviceAccount.json na raiz do repo
+// (que está no .gitignore). Na Vercel nenhum dos dois existe, então o
+// comportamento lá não muda.
+function caminhosLocais(env = process.env) {
+  return [
+    env.GOOGLE_APPLICATION_CREDENTIALS,
+    path.resolve(__dirname, "../../serviceAccount.json"),
+    path.join(process.cwd(), "serviceAccount.json")
+  ].filter(Boolean);
+}
+
+function lerServiceAccountLocal(caminhos) {
+  for (const caminho of caminhos) {
+    try {
+      return fs.readFileSync(caminho, "utf8");
+    } catch {
+      /* tenta o próximo */
+    }
+  }
+  return "";
+}
+
+// `env` e `caminhos` só existem pros testes (não dependerem do ambiente de
+// quem roda); em produção e no uso normal ficam nos padrões.
+function credenciais({ env = process.env, caminhos = caminhosLocais(env) } = {}) {
+  let bruto = env.FIREBASE_SERVICE_ACCOUNT;
+  if (!bruto || !bruto.trim()) bruto = lerServiceAccountLocal(caminhos);
   if (!bruto || !bruto.trim()) {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT não configurada nas Environment Variables da Vercel.");
+    throw new Error(
+      "FIREBASE_SERVICE_ACCOUNT não configurada nas Environment Variables da Vercel " +
+        "(no teste local, também vale um serviceAccount.json na raiz do repositório)."
+    );
   }
   bruto = bruto.trim();
 
@@ -78,6 +110,17 @@ function getDb() {
   return _db;
 }
 
+/**
+ * Prova que a service account existe e que o Firestore responde (usado só
+ * pelo diagnóstico da maquininha e pelo `npm run point:check`). Lança com a
+ * mensagem do problema; devolve o projeto em que conectou.
+ */
+async function checarFirebase() {
+  const cred = credenciais();
+  await getDb().collection("configuracoes").doc("sistema").get();
+  return { projectId: cred.project_id };
+}
+
 /** Lê o ID token do header Authorization (ou do corpo, campo idToken). */
 function tokenDaRequisicao(req) {
   const doCorpo = req && req.body && typeof req.body === "object" && req.body.idToken;
@@ -121,4 +164,4 @@ function exigirAdmin(idToken) {
   return autenticar(idToken, { soAdmin: true });
 }
 
-module.exports = { getDb, credenciais, tokenDaRequisicao, exigirStaff, exigirAdmin };
+module.exports = { getDb, credenciais, checarFirebase, tokenDaRequisicao, exigirStaff, exigirAdmin };

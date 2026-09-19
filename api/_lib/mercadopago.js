@@ -93,5 +93,9 @@ module.exports = {
 
   // Pagamento pela API clássica (/v1/payments) — onde o MP costuma expor as
   // taxas (fee_details) e o valor líquido (net_received_amount).
-  buscarPagamento: (pagamentoId) => mpFetch(`/v1/payments/${id(pagamentoId)}`)
+  buscarPagamento: (pagamentoId) => mpFetch(`/v1/payments/${id(pagamentoId)}`),
+
+  // Dono do access token (id, apelido, país). Serve pra provar que o token
+  // é válido e de qual conta — usado só no diagnóstico.
+  usuarioAtual: () => mpFetch("/users/me")
 };

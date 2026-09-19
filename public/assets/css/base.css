@@ -176,3 +176,30 @@ tbody tr:hover { background: #f9f2f1; }
 .pt-linha { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 13px; }
 .pt-ok { color: var(--ok); font-weight: 600; }
 .pt-pend { color: var(--warn); font-weight: 600; }
+
+/* Diagnostico da maquininha (Configuracoes → Maquininha → Testar conexao) */
+.pt-checks { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
+.pt-check {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px; background: #fff; font-size: 13px;
+}
+.pt-check > div { min-width: 0; overflow-wrap: anywhere; }
+.pt-check-tag {
+  flex: 0 0 auto; min-width: 62px; text-align: center; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; border: 1px solid var(--line);
+}
+.pt-check.ok { border-left-color: var(--ok); }
+.pt-check.ok .pt-check-tag { background: #e7f4ee; color: var(--ok); border-color: #bfe3d1; }
+.pt-check.aviso { border-left-color: var(--warn); }
+.pt-check.aviso .pt-check-tag { background: #f6ecdf; color: var(--warn); border-color: #e6d2b4; }
+.pt-check.erro { border-left-color: var(--err); }
+.pt-check.erro .pt-check-tag { background: #f6e6e6; color: var(--err); border-color: #e6c4c4; }
+
+/* Faixa "TESTE LOCAL" no topo do PDV (maquininha ligada so neste navegador) */
+.pt-banner-local {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 16px; padding: 10px 14px; font-size: 13px;
+  border: 1px solid #e6d2b4; border-left: 4px solid var(--warn); border-radius: var(--radius); background: #fbf3e8;
+}
+.pt-banner-local > div { flex: 1 1 260px; min-width: 0; }
+.pt-banner-local .btn { flex: 0 0 auto; }

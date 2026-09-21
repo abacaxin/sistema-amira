@@ -78,6 +78,16 @@ test("buscarPagamento: API clássica /v1/payments/{id}", async () => {
   assert.equal(chamadas[0].url, "https://api.mercadopago.com/v1/payments/123456789");
 });
 
+test("usuarioAtual: GET /users/me com o token (prova de qual conta é o access token)", async () => {
+  responder({ id: 998877, nickname: "LOJA_AMIRA", site_id: "MLB" });
+  const eu = await mp.usuarioAtual();
+  assert.equal(eu.nickname, "LOJA_AMIRA");
+  assert.equal(chamadas[0].url, "https://api.mercadopago.com/users/me");
+  assert.equal(chamadas[0].method, "GET");
+  assert.equal(chamadas[0].headers.Authorization, "Bearer APP_USR-token-de-teste");
+  assert.equal(chamadas[0].body, undefined);
+});
+
 test("erro do MP vira 502 com a mensagem do MP (publico) e guarda o HTTP original", async () => {
   responder({ errors: [{ code: "invalid_terminal", message: "Terminal não está em modo PDV" }] }, { ok: false, status: 400 });
   await assert.rejects(

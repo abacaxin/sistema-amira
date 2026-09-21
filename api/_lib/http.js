@@ -25,7 +25,11 @@ function corpoJson(req) {
   return typeof b === "object" ? b : {};
 }
 
-/** Responde um erro no formato { erro: "mensagem" } com o status certo. */
+/**
+ * Responde um erro no formato { erro: "mensagem" } com o status certo. Se o
+ * erro traz `.codigo` (ex.: "na_maquininha"), vai junto: a tela usa pra agir
+ * diferente sem ter que interpretar o texto.
+ */
 function responderErro(res, erro) {
   const status = erro && erro.status ? erro.status : 500;
   if (status >= 500) {
@@ -35,7 +39,7 @@ function responderErro(res, erro) {
     (erro && erro.publico) ||
     (status >= 500 ? "Erro interno. Tente de novo em instantes." : (erro && erro.message) || "Requisição inválida.");
   if (erro && erro.retryApos) res.setHeader("Retry-After", String(erro.retryApos));
-  return res.status(status).json({ erro: mensagem });
+  return res.status(status).json({ erro: mensagem, ...(erro && erro.codigo ? { codigo: String(erro.codigo) } : {}) });
 }
 
 module.exports = { erroHttp, corpoJson, responderErro };

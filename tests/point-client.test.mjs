@@ -11,7 +11,16 @@ import {
   pagamentoDaMaquininha,
   marcarAprovada,
   novoCobrancaId,
-  TIPO_POINT
+  TIPO_POINT,
+  CHAVE_TESTE_LOCAL,
+  urlLocalValida,
+  storageSeguro,
+  lerTesteLocal,
+  ativarTesteLocal,
+  desativarTesteLocal,
+  configPointEfetiva,
+  detalheLegivel,
+  totalDaCobranca
 } from "../public/assets/js/point.js";
 
 // ── fetch falso ──
@@ -298,4 +307,184 @@ test("marcarAprovada guarda o que a cobrança informou e ajusta as parcelas da l
 
 test("TIPO_POINT: só crédito e débito passam pela maquininha", () => {
   assert.deepEqual(TIPO_POINT, { credito: "credit_card", debito: "debit_card" });
+});
+
+test("cliente: diagnostico chama GET /api/point/diagnostico com o token", async () => {
+  const f = fetchFalso([{ status: 200, corpo: { ok: true, checks: [], terminais: [] } }]);
+  const r = await cliente(f, "http://localhost:3001").diagnostico();
+  assert.equal(r.ok, true);
+  assert.equal(f.chamadas[0].url, "http://localhost:3001/api/point/diagnostico");
+  assert.equal(f.chamadas[0].method, "GET");
+  assert.equal(f.chamadas[0].headers.Authorization, "Bearer TOKEN-DE-TESTE");
+});
+
+// ── Teste local (só neste navegador) ──
+const storageFalso = (inicial = {}) => {
+  const dados = new Map(Object.entries(inicial));
+  return {
+    getItem: (k) => (dados.has(k) ? dados.get(k) : null),
+    setItem: (k, v) => void dados.set(k, String(v)),
+    removeItem: (k) => void dados.delete(k),
+    dados
+  };
+};
+const storageQueExplode = () => ({
+  getItem: () => { throw new Error("SecurityError"); },
+  setItem: () => { throw new Error("QuotaExceededError"); },
+  removeItem: () => { throw new Error("SecurityError"); }
+});
+
+test("urlLocalValida: só o próprio computador (localhost / 127.0.0.1, http, porta opcional)", () => {
+  assert.equal(urlLocalValida("http://localhost:3001"), "http://localhost:3001");
+  assert.equal(urlLocalValida("  http://127.0.0.1:3001///  "), "http://127.0.0.1:3001");
+  assert.equal(urlLocalValida("http://localhost"), "http://localhost");
+  for (const ruim of [
+    "", null, undefined, "localhost:3001", "https://localhost:3001",
+    "http://api.exemplo.app", "http://localhost.evil.com", "http://evil.com/localhost",
+    "http://localhost:3001@evil.com", "http://127.0.0.1.evil.com:3001", "http://localhost:3001/api",
+    "http://192.168.0.10:3001", "http://0.0.0.0:3001", "javascript:alert(1)"
+  ]) {
+    assert.equal(urlLocalValida(ruim), "", `deveria recusar: ${ruim}`);
+  }
+});
+
+test("configPointEfetiva: sem teste local devolve a config do sistema normalizada", () => {
+  const st = storageFalso();
+  assert.deepEqual(configPointEfetiva({ ativo: true, obrigatorio: true, api_url: "https://api.app/" }, st), {
+    ativo: true, obrigatorio: true, api_url: "https://api.app", testeLocal: false
+  });
+  assert.deepEqual(configPointEfetiva(undefined, st), { ativo: false, obrigatorio: false, api_url: "", testeLocal: false });
+  assert.equal(configPointEfetiva({ ativo: "true" }, st).ativo, false, "só o booleano true liga");
+});
+
+test("configPointEfetiva: teste local ligado sobrepõe tudo, liga a maquininha e nunca é obrigatório", () => {
+  const st = storageFalso();
+  assert.equal(ativarTesteLocal(st, "http://localhost:3001").ok, true);
+  const cfg = configPointEfetiva({ ativo: false, obrigatorio: true, api_url: "https://api.app" }, st);
+  assert.deepEqual(cfg, { ativo: true, obrigatorio: false, api_url: "http://localhost:3001", testeLocal: true });
+});
+
+test("ativarTesteLocal / desativarTesteLocal: grava só o necessário e volta ao normal", () => {
+  const st = storageFalso();
+  const r = ativarTesteLocal(st, "http://127.0.0.1:3001/");
+  assert.deepEqual(r, { ok: true, api_url: "http://127.0.0.1:3001" });
+  assert.deepEqual(JSON.parse(st.dados.get(CHAVE_TESTE_LOCAL)), { ativo: true, api_url: "http://127.0.0.1:3001" });
+  assert.deepEqual(lerTesteLocal(st), { api_url: "http://127.0.0.1:3001" });
+
+  assert.equal(desativarTesteLocal(st), true);
+  assert.equal(lerTesteLocal(st), null);
+  assert.equal(configPointEfetiva({ ativo: false }, st).testeLocal, false);
+});
+
+test("ativarTesteLocal: recusa URL de fora sem gravar nada", () => {
+  const st = storageFalso();
+  const r = ativarTesteLocal(st, "https://api.exemplo.app");
+  assert.equal(r.ok, false);
+  assert.match(r.erro, /deste computador/);
+  assert.equal(st.dados.size, 0);
+});
+
+test("teste local guardado com URL adulterada ou lixo é ignorado (o token de login não vaza pra fora)", () => {
+  for (const bruto of [
+    JSON.stringify({ ativo: true, api_url: "https://evil.example" }),
+    JSON.stringify({ ativo: true, api_url: "http://localhost:3001@evil.example" }),
+    JSON.stringify({ ativo: false, api_url: "http://localhost:3001" }),
+    JSON.stringify({ api_url: "http://localhost:3001" }),
+    "isto não é json", "null", "42", ""
+  ]) {
+    const st = storageFalso({ [CHAVE_TESTE_LOCAL]: bruto });
+    assert.equal(lerTesteLocal(st), null, bruto);
+    assert.equal(configPointEfetiva({ ativo: false }, st).testeLocal, false, bruto);
+  }
+});
+
+test("storage bloqueado pelo navegador: nada estoura e o sistema segue com a config normal", () => {
+  const st = storageQueExplode();
+  assert.equal(lerTesteLocal(st), null);
+  assert.equal(configPointEfetiva({ ativo: true, api_url: "https://a.app" }, st).api_url, "https://a.app");
+  const r = ativarTesteLocal(st, "http://localhost:3001");
+  assert.equal(r.ok, false);
+  assert.match(r.erro, /não deixou guardar/);
+  assert.equal(desativarTesteLocal(st), false);
+  assert.equal(lerTesteLocal(null), null);
+  assert.equal(desativarTesteLocal(null), true);
+});
+
+test("storageSeguro: sem localStorage (Node) devolve null em vez de estourar", () => {
+  assert.equal(storageSeguro(), null);
+});
+
+// ── Cancelar cobrança: código do erro e motivo legível ──
+test("cliente: o 'codigo' que a API manda (ex.: na_maquininha) chega no erro; sem codigo, a propriedade nem existe", async () => {
+  const f = fetchFalso([{ status: 409, corpo: { erro: "A cobrança já está na maquininha.", codigo: "na_maquininha" } }]);
+  await assert.rejects(
+    () => cliente(f).cancelar("pdv-1"),
+    (e) => e.codigo === "na_maquininha" && e.status === 409 && e.definitivo === true && /maquininha/.test(e.message)
+  );
+  const g = fetchFalso([{ status: 400, corpo: { erro: "Valor inválido." } }]);
+  await assert.rejects(() => cliente(g).cobrar({}), (e) => !("codigo" in e));
+});
+
+test("detalheLegivel: prefere o motivo do PAGAMENTO, traduz os conhecidos e não repete o próprio status", () => {
+  assert.equal(detalheLegivel({ status: "canceled", status_detail: "canceled", pagamento_detalhe: "canceled_on_terminal" }), "Cancelada na maquininha.");
+  assert.equal(detalheLegivel({ status: "canceled", pagamento_detalhe: "canceled_by_api" }), "Cancelada pelo sistema.");
+  assert.equal(detalheLegivel({ status: "failed", status_detail: "failed", pagamento_detalhe: "rejected_by_issuer" }), "Recusado pelo banco do cartão.");
+  assert.equal(detalheLegivel({ status: "failed", pagamento_detalhe: "insufficient_amount" }), "Saldo ou limite insuficiente.");
+  // só o da order (sem o do pagamento) também vale
+  assert.equal(detalheLegivel({ status: "failed", status_detail: "card_disabled" }), "Cartão bloqueado ou desativado.");
+  // motivo desconhecido aparece cru (melhor que esconder)
+  assert.equal(detalheLegivel({ status: "failed", pagamento_detalhe: "motivo_novo_do_mp" }), "Detalhe: motivo_novo_do_mp");
+  // nada a dizer além do status
+  assert.equal(detalheLegivel({ status: "canceled", status_detail: "canceled" }), "");
+  assert.equal(detalheLegivel({ status: "expired" }), "");
+  assert.equal(detalheLegivel(null), "");
+  assert.equal(detalheLegivel(undefined), "");
+});
+
+// ── Total cobrado do cliente (topo do modal da maquininha) ──
+test("totalDaCobranca: loja absorve (seller) → o cliente paga o valor cheio, nada estimado, mesmo com % de cliente na tabela", () => {
+  const t = totalDaCobranca({ valor: 119.9, parcelas: 5, taxas: { cliente: 10, loja: 5 }, quemPaga: "seller" });
+  assert.equal(t.total, 119.9);
+  assert.equal(t.valorOriginal, 119.9);
+  assert.equal(t.juros, 0);
+  assert.equal(t.estimado, false);
+  assert.equal(t.parcelas, 5);
+  assert.equal(t.valorParcela, 23.98);
+});
+
+test("totalDaCobranca: cliente paga o juros (buyer) → total pela tabela, marcado como estimado", () => {
+  const t = totalDaCobranca({ valor: 100, parcelas: 3, taxas: { cliente: 5, loja: 2 }, quemPaga: "buyer" });
+  assert.equal(t.total, 105);
+  assert.equal(t.juros, 5);
+  assert.equal(t.valorParcela, 35);
+  assert.equal(t.estimado, true);
+});
+
+test("totalDaCobranca: débito e crédito à vista (1x) e entradas estranhas não estouram", () => {
+  const debito = totalDaCobranca({ valor: 50, quemPaga: "seller" });
+  assert.deepEqual(debito, { total: 50, valorOriginal: 50, juros: 0, parcelas: 1, valorParcela: 50, estimado: false });
+  assert.equal(totalDaCobranca({ valor: "abc", quemPaga: "seller" }).total, 0);
+  assert.equal(totalDaCobranca({ valor: 10, parcelas: 0, quemPaga: "seller" }).parcelas, 1);
+  assert.equal(totalDaCobranca({ valor: 10, parcelas: "3x", quemPaga: "seller" }).parcelas, 1, "parcelas inválidas viram 1");
+  // buyer sem % na tabela (não deveria acontecer) não inventa juros
+  const semTaxa = totalDaCobranca({ valor: 10, parcelas: 2, taxas: undefined, quemPaga: "buyer" });
+  assert.equal(semTaxa.total, 10);
+  assert.equal(semTaxa.estimado, false);
+});
+
+test("totalDaCobranca: arredonda em centavos (valor da parcela e do juros)", () => {
+  const t = totalDaCobranca({ valor: 33.33, parcelas: 3, taxas: { cliente: 7.5 }, quemPaga: "buyer" });
+  assert.equal(t.total, 35.83);
+  assert.equal(t.juros, 2.5);
+  assert.equal(t.valorParcela, 11.94);
+});
+
+test("totalDaCobranca combina com quemPagaJuros: o que é pedido ao MP é o que vira estimativa na tela", () => {
+  const taxas = { cliente: 5, loja: 2 };
+  const buyer = quemPagaJuros({ tipo: "credit_card", parcelas: 3, taxas });
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 3, taxas, quemPaga: buyer }).total, 105);
+  const seller = quemPagaJuros({ tipo: "credit_card", parcelas: 1, taxas }); // 1x: MP não parcela com juros
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 1, taxas, quemPaga: seller }).total, 100);
+  const debito = quemPagaJuros({ tipo: "debit_card", parcelas: 1, taxas });
+  assert.equal(totalDaCobranca({ valor: 100, parcelas: 1, taxas, quemPaga: debito }).total, 100);
 });

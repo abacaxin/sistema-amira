@@ -23,14 +23,26 @@ const {
   montarOrderPoint,
   primeiroPagamento,
   normalizarOrder,
+  trocarCampoQuemPagaJuros,
+  codigoErroMp,
+  mapearTerminais,
   extrairTaxas,
   podeAvancar,
   compactar,
   projetarCobranca
 } = require("./point");
+const { diagnosticar } = require("./point-diagnostico");
 
 const COLECAO = "cobrancas_point";
 const ID_COBRANCA = /^[A-Za-z0-9_-]{8,60}$/;
+
+// O MP só cancela pela API uma order que ainda NÃO chegou na maquininha
+// (status "created"). Depois disso (status "at_terminal", o que acontece em
+// segundos) devolve 409 cannot_cancel_order e o cancelamento é pela própria
+// maquininha. O guia de migração cita um header que liberaria isso, e nós o
+// mandamos, mas na prática o MP recusa — daí a mensagem abaixo.
+const MSG_CANCELAR_NA_MAQUININHA =
+  "A cobrança já está na maquininha, e o Mercado Pago só deixa cancelar por lá. Aperte o botão de cancelar (X) na própria maquininha — esta tela atualiza sozinha.";
 
 // Assinatura do MP (x-signature). manifest = "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"
 // mas cada segmento SÓ entra se o valor existir (spec do MP). Retorna
@@ -68,7 +80,16 @@ function checarAssinatura(req, dataId, env) {
   }
 }
 
-function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, env = process.env, agora = () => new Date() }) {
+function criarHandlers({
+  getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRequisicao, checarFirebase,
+  env = process.env,
+  agora = () => new Date(),
+  // Chave de idempotência NOVA a cada tentativa de cancelar/estornar: essas
+  // operações já são idempotentes pelo estado da order (cancelar/estornar duas
+  // vezes é recusado), e reaproveitar a chave faz o MP responder
+  // "idempotency_key_already_used" (409) num segundo clique.
+  novaChave = () => crypto.randomUUID()
+}) {
   const podeMexer = (staff, d) => staff.role === "admin" || d.vendedor_uid === staff.uid;
 
   function idDaQuery(req) {
@@ -180,15 +201,23 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
 
       let order;
       try {
-        order = await mp.criarOrderPoint(
-          montarOrderPoint({
-            ...dados,
-            terminalId,
-            descricao: `Venda Amira ${dados.cobrancaId}`,
-            expiraMin: env.POINT_EXPIRA_MIN
-          }),
-          dados.cobrancaId
-        );
+        const corpoOrder = montarOrderPoint({
+          ...dados,
+          terminalId,
+          descricao: `Venda Amira ${dados.cobrancaId}`,
+          expiraMin: env.POINT_EXPIRA_MIN
+        });
+        try {
+          order = await mp.criarOrderPoint(corpoOrder, dados.cobrancaId);
+        } catch (erro) {
+          // O MP às vezes só aceita o outro nome do campo "quem paga o juros"
+          // (a doc usa os dois): tenta o alternativo UMA vez, com chave nova
+          // porque o corpo mudou.
+          const alternativo = trocarCampoQuemPagaJuros(corpoOrder, erro);
+          if (!alternativo) throw erro;
+          console.warn("[point] o MP recusou o campo de quem paga o juros; tentando o nome alternativo:", erro.message);
+          order = await mp.criarOrderPoint(alternativo, `${dados.cobrancaId}-b`);
+        }
       } catch (erro) {
         await ref.update({ status: "erro", erro: String(erro.message).slice(0, 300), atualizado_em: agora() }).catch(() => {});
         // 409 do MP = a maquininha já tem uma cobrança aberta (só cabe uma).
@@ -252,13 +281,21 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
       }
 
       try {
-        await mp.cancelarOrderPoint(d.order_id, `cancel-${d.cobranca_id}`);
+        await mp.cancelarOrderPoint(d.order_id, novaChave());
       } catch (erro) {
-        console.warn("[point] cancelar recusado pelo MP:", erro && erro.message);
-        throw erroHttp(
-          409,
-          "Não deu pra cancelar pelo sistema — se a cobrança já está aberta na maquininha, cancele por lá (botão de cancelar/voltar) e aguarde aqui."
-        );
+        const codigo = codigoErroMp(erro);
+        if (erro && erro.mpStatus === 409 && codigo === "order_already_canceled") {
+          // Já estava cancelada (cancelada na maquininha um instante antes, por
+          // exemplo): não é falha — segue e sincroniza o estado abaixo.
+        } else if (erro && erro.mpStatus === 409 && codigo === "cannot_cancel_order") {
+          console.warn("[point] cancelar: a order já está na maquininha (cannot_cancel_order):", erro.message);
+          throw erroHttp(409, MSG_CANCELAR_NA_MAQUININHA, { codigo: "na_maquininha" });
+        } else {
+          // Qualquer outra recusa: mostra o motivo REAL do MP (antes ficava só no log).
+          console.warn("[point] cancelar recusado pelo MP:", erro && erro.message);
+          const motivo = erro && erro.publico ? `${erro.publico}. ` : "";
+          throw erroHttp(502, `Não deu pra cancelar pelo sistema. ${motivo}Se a cobrança já está na maquininha, cancele por lá (botão X).`);
+        }
       }
       // Estado canônico depois do cancelamento (a resposta do cancel pode vir enxuta).
       const order = await mp.buscarOrderPoint(d.order_id);
@@ -283,7 +320,17 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
         throw erroHttp(409, "Só dá pra estornar uma cobrança aprovada.");
       }
 
-      const resposta = await mp.estornarOrderPoint(d.order_id, `refund-${d.cobranca_id}`);
+      let resposta;
+      try {
+        resposta = await mp.estornarOrderPoint(d.order_id, novaChave());
+      } catch (erro) {
+        // O MP recusou. Antes de desistir, confere o estado real: se a order JÁ
+        // está estornada (resposta de uma tentativa anterior que se perdeu, ou
+        // estorno feito pelo app do MP), o objetivo foi cumprido — não é erro.
+        const order = await mp.buscarOrderPoint(d.order_id).catch(() => null);
+        if (!order || order.status !== "refunded") throw erro;
+        resposta = { status: "refunded" };
+      }
       // O estorno é sempre total. Gravamos direto: o MP já confirmou na resposta.
       await ref.update(
         compactar({
@@ -314,17 +361,9 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
 
       if (req.method === "GET") {
         const resposta = await mp.listarTerminais();
-        const lista = (resposta && ((resposta.data && resposta.data.terminals) || resposta.terminals)) || [];
         return res.status(200).json({
           configurado: configurado || null,
-          terminais: lista.map((t) => ({
-            id: t.id,
-            modo: t.operating_mode || null,
-            loja_id: t.store_id ?? null,
-            caixa_id: t.pos_id ?? null,
-            caixa_externo: t.external_pos_id || null,
-            selecionado: Boolean(configurado) && t.id === configurado
-          }))
+          terminais: mapearTerminais(resposta, configurado)
         });
       }
 
@@ -337,6 +376,22 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
       }
 
       throw erroHttp(405, "Método não permitido.");
+    } catch (erro) {
+      return responderErro(res, erro);
+    }
+  }
+
+  // ── GET /api/point/diagnostico (só admin) ────────────────────────────
+  // Confere token, Firebase, terminais e modo PDV e diz o que falta (ver
+  // point-diagnostico.js). Devolve 200 mesmo com itens em "erro": o
+  // resultado É o diagnóstico. Só falha (401/403) se o login não passar.
+  async function diagnostico(req, res) {
+    if (aplicarCors(req, res, env)) return;
+    try {
+      if (req.method !== "GET") throw erroHttp(405, "Método não permitido.");
+      await exigirAdmin(tokenDaRequisicao(req));
+      const resultado = await diagnosticar({ env, mp, checarFirebase });
+      return res.status(200).json(resultado);
     } catch (erro) {
       return responderErro(res, erro);
     }
@@ -384,7 +439,7 @@ function criarHandlers({ getDb, exigirStaff, exigirAdmin, mp, limitar, tokenDaRe
     }
   }
 
-  return { cobrar, status, cancelar, estornar, terminais, webhook };
+  return { cobrar, status, cancelar, estornar, terminais, diagnostico, webhook };
 }
 
 module.exports = { criarHandlers, checarAssinatura, COLECAO };

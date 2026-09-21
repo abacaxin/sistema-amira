@@ -9,6 +9,9 @@ const {
   podeAvancar,
   compactar,
   projetarCobranca,
+  trocarCampoQuemPagaJuros,
+  codigoErroMp,
+  mapearTerminais,
   CAMPO_QUEM_PAGA_JUROS
 } = require("../api/_lib/point");
 const { papelDaEquipe } = require("../api/_lib/equipe");
@@ -87,6 +90,113 @@ test("montarOrderPoint: expiração respeita o mínimo/máximo do MP (PT30S a PT
 test("montarOrderPoint: descrição é cortada em 150 caracteres", () => {
   const o = montarOrderPoint({ cobrancaId: ID, tipo: "debit_card", valor: 1, terminalId: "T", descricao: "x".repeat(400) });
   assert.equal(o.description.length, 150);
+});
+
+// ── trocarCampoQuemPagaJuros: plano B se o MP rejeitar o nome do campo ──
+const corpoCredito = () =>
+  montarOrderPoint({ cobrancaId: ID, tipo: "credit_card", valor: 100, parcelas: 3, quemPagaJuros: "buyer", terminalId: "T" });
+const erroMp = (mpStatus, detalhe, message = "Mercado Pago POST /v1/orders -> HTTP 400") =>
+  Object.assign(new Error(message), { status: 502, mpStatus, detalhe });
+
+test("trocarCampoQuemPagaJuros: 400 que cita o campo → devolve o corpo com o outro nome e o mesmo valor", () => {
+  const corpo = corpoCredito();
+  assert.ok("installments_cost" in corpo.config.payment_method);
+  const alt = trocarCampoQuemPagaJuros(corpo, erroMp(400, { errors: [{ message: "installments_cost is not allowed" }] }));
+  assert.equal(alt.config.payment_method.default_installments_cost, "buyer");
+  assert.equal("installments_cost" in alt.config.payment_method, false);
+  // o resto do corpo não muda
+  assert.equal(alt.config.payment_method.default_installments, 3);
+  assert.equal(alt.config.payment_method.default_type, "credit_card");
+  assert.deepEqual(alt.transactions, corpo.transactions);
+  assert.deepEqual(alt.config.point, corpo.config.point);
+});
+
+test("trocarCampoQuemPagaJuros: também volta do nome alternativo pro original", () => {
+  const alt = trocarCampoQuemPagaJuros(corpoCredito(), erroMp(400, { message: "installments_cost inválido" }));
+  const volta = trocarCampoQuemPagaJuros(alt, erroMp(400, { message: "default_installments_cost inválido" }));
+  assert.equal(volta.config.payment_method.installments_cost, "buyer");
+  assert.equal("default_installments_cost" in volta.config.payment_method, false);
+});
+
+test("trocarCampoQuemPagaJuros: não muta o corpo original", () => {
+  const corpo = corpoCredito();
+  const antes = JSON.stringify(corpo);
+  trocarCampoQuemPagaJuros(corpo, erroMp(400, { message: "installments_cost" }));
+  assert.equal(JSON.stringify(corpo), antes);
+});
+
+test("trocarCampoQuemPagaJuros: só tenta de novo quando o erro é 400 E fala do campo", () => {
+  const corpo = corpoCredito();
+  assert.equal(trocarCampoQuemPagaJuros(corpo, erroMp(400, { message: "terminal not in PDV mode" })), null, "400 de outro assunto");
+  assert.equal(trocarCampoQuemPagaJuros(corpo, erroMp(409, { message: "installments_cost" })), null, "não é 400");
+  assert.equal(trocarCampoQuemPagaJuros(corpo, erroMp(500, { message: "installments_cost" })), null);
+  assert.equal(trocarCampoQuemPagaJuros(corpo, new Error("rede caiu")), null, "erro sem mpStatus");
+  assert.equal(trocarCampoQuemPagaJuros(corpo, null), null);
+  assert.equal(trocarCampoQuemPagaJuros(corpo, undefined), null);
+});
+
+test("trocarCampoQuemPagaJuros: débito (sem o campo) ou corpo estranho nunca troca nada", () => {
+  const debito = montarOrderPoint({ cobrancaId: ID, tipo: "debit_card", valor: 1, terminalId: "T" });
+  assert.equal(trocarCampoQuemPagaJuros(debito, erroMp(400, { message: "installments_cost" })), null);
+  assert.equal(trocarCampoQuemPagaJuros({}, erroMp(400, { message: "installments_cost" })), null);
+  assert.equal(trocarCampoQuemPagaJuros(null, erroMp(400, { message: "installments_cost" })), null);
+});
+
+test("trocarCampoQuemPagaJuros: acha o campo também na mensagem do erro (sem detalhe JSON)", () => {
+  const alt = trocarCampoQuemPagaJuros(corpoCredito(), erroMp(400, undefined, "HTTP 400: installments_cost inválido"));
+  assert.equal(alt.config.payment_method.default_installments_cost, "buyer");
+});
+
+// ── codigoErroMp / detalhe do pagamento ──
+test("codigoErroMp: lê errors[0].code, depois code/error na raiz; sem nada devolve vazio", () => {
+  assert.equal(codigoErroMp({ detalhe: { errors: [{ code: "cannot_cancel_order", message: "x" }] } }), "cannot_cancel_order");
+  assert.equal(codigoErroMp({ detalhe: { code: "order_not_found" } }), "order_not_found");
+  assert.equal(codigoErroMp({ detalhe: { error: "bad_request" } }), "bad_request");
+  assert.equal(codigoErroMp({ detalhe: { errors: [] } }), "");
+  assert.equal(codigoErroMp({ detalhe: {} }), "");
+  assert.equal(codigoErroMp(new Error("sem detalhe")), "");
+  assert.equal(codigoErroMp(null), "");
+  assert.equal(codigoErroMp(undefined), "");
+});
+
+test("normalizarOrder / projetarCobranca: o motivo do PAGAMENTO (canceled_on_terminal, rejected_by_issuer...) é guardado e chega à tela", () => {
+  const n = normalizarOrder({
+    id: "ORD1", status: "canceled", status_detail: "canceled",
+    transactions: { payments: [{ id: "PAY1", status: "canceled", status_detail: "canceled_on_terminal" }] }
+  });
+  assert.equal(n.pagamento_detalhe, "canceled_on_terminal");
+  assert.equal(n.status_detail, "canceled");
+
+  const semDetalhe = normalizarOrder({ id: "ORD2", status: "created", transactions: { payments: [{ id: "P" }] } });
+  assert.equal(semDetalhe.pagamento_detalhe, null);
+
+  const p = projetarCobranca({ cobranca_id: "x", status: "failed", pagamento_detalhe: "rejected_by_issuer", vendedor_uid: "u1" });
+  assert.equal(p.pagamento_detalhe, "rejected_by_issuer");
+  assert.equal("vendedor_uid" in p, false);
+});
+
+// ── mapearTerminais ──
+test("mapearTerminais: aceita { data: { terminals } } e { terminals } e marca o configurado", () => {
+  const t = [
+    { id: "PAX_A910__1", operating_mode: "PDV", store_id: 11, pos_id: 22, external_pos_id: "CX1" },
+    { id: "NEWLAND_N950__2", operating_mode: "STANDALONE", store_id: 11, pos_id: 23 }
+  ];
+  const esperado = [
+    { id: "PAX_A910__1", modo: "PDV", loja_id: 11, caixa_id: 22, caixa_externo: "CX1", selecionado: true },
+    { id: "NEWLAND_N950__2", modo: "STANDALONE", loja_id: 11, caixa_id: 23, caixa_externo: null, selecionado: false }
+  ];
+  assert.deepEqual(mapearTerminais({ data: { terminals: t } }, "PAX_A910__1"), esperado);
+  assert.deepEqual(mapearTerminais({ terminals: t }, " PAX_A910__1 "), esperado, "ignora espaços no id configurado");
+});
+
+test("mapearTerminais: sem terminal configurado ninguém é selecionado; resposta vazia/estranha vira lista vazia", () => {
+  const r = mapearTerminais({ data: { terminals: [{ id: "A__1" }] } }, "");
+  assert.equal(r[0].selecionado, false);
+  assert.equal(r[0].modo, null);
+  assert.equal(r[0].loja_id, null);
+  assert.deepEqual(mapearTerminais({}, "X"), []);
+  assert.deepEqual(mapearTerminais(null, "X"), []);
+  assert.deepEqual(mapearTerminais({ data: {} }, undefined), []);
 });
 
 test("normalizarOrder: order criada", () => {

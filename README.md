@@ -168,10 +168,18 @@ python scripts/backfill_parcelas_pedidos_site.py --aplicar
 python scripts/conciliar_point.py
 python scripts/conciliar_point.py --desde 2026-09-01
 
+# maquininha: confere se da pra cobrar (token do MP, Firebase, terminal, modo PDV).
+# Nao cobra nada. --gravar guarda o id do terminal no .env; --colocar-pdv poe em modo PDV
+npm run point:check
+npm run point:check -- --gravar --colocar-pdv
+
+# API da maquininha rodando NO SEU COMPUTADOR (mesmas funcoes da Vercel; le o .env)
+npm run api:dev
+
 # servidor estatico local para abrir o front sem deploy
 python scripts/dev_server.py
 
-# testes da API da maquininha (Node 22+, sem rede nem credencial)
+# testes da API e dos scripts da maquininha (Node 22+, sem rede nem credencial)
 npm install && npm test
 ```
 
@@ -208,10 +216,11 @@ public/                       front-end (deploy no Hosting, target "interno")
 api/                          funcoes serverless (Vercel) — SO a maquininha Point
   point/*.js, webhook-point.js  rotas (finas; a logica esta em _lib/point-handlers.js)
   _lib/                       Firestore Admin, cliente Mercado Pago, regras puras, auth, CORS
-tests/                        testes da API e do cliente da maquininha (node --test)
+tests/                        testes da API, do cliente e dos scripts da maquininha (node --test)
 package.json, vercel.json     dependencias e build das funcoes (Vercel)
-.env.example                  variaveis de ambiente da API (na Vercel; nunca commitar valores)
-scripts/                      ferramentas Python (firebase-admin)
+.env.example                  variaveis de ambiente da API (na Vercel ou no .env local; nunca commitar valores)
+scripts/                      ferramentas Python (firebase-admin) + teste local da maquininha em Node
+  api-dev.mjs, point-check.mjs, lib/env.mjs   npm run api:dev / npm run point:check
 firestore.rules               CANONICO (site + sistema)
 firestore.indexes.json        CANONICO
 firebase.json                 Hosting (target "interno") + Firestore
@@ -355,7 +364,30 @@ PDV ── /api/point/cobrar ──▶ API (Vercel) ── POST /v1/orders ─�
   `valor_liquido = valor − custo_loja`, a mesma regra de antes.
 - **Quem paga o juros** segue a tabela de juros que ja existe: cliente com juros > 0 no numero de
   parcelas = `buyer` (o cliente paga); senao `seller` (a loja absorve). Quem define as taxas
-  reais e o contrato do Mercado Pago, nao a tabela.
+  reais e o contrato do Mercado Pago, nao a tabela (detalhes abaixo).
+
+### Quem controla as taxas?
+
+**O Mercado Pago**, nao o sistema. A taxa por parcela e o prazo de recebimento (na hora, 14 ou 30
+dias) sao do plano da conta no MP; o sistema nao altera isso.
+
+| O que | Quem define | Como o sistema fica sabendo |
+|---|---|---|
+| Custo da loja (a taxa) | Mercado Pago (plano da conta) | depois de aprovar, le o valor liquido no MP: custo = valor − liquido |
+| Quanto o cliente pagou (com juros, se houver) | Mercado Pago | le o total realmente cobrado |
+| Estimativa antes de cobrar | tabela de juros em Configuracoes | so uma conta local |
+
+- Venda aprovada na maquininha usa **so os numeros reais** (`origem_taxa: "maquininha"`). A tabela
+  **nao** entra na conta, entao nao ha desconto em dobro.
+- A tabela de juros passa a servir pra: (1) mostrar a **previa** no PDV antes de cobrar; (2) ser a
+  **estimativa de reserva** se o MP nao devolver as taxas (a venda fica `origem_taxa: "estimada"`);
+  (3) decidir **quem paga o juros** (cliente com juros > 0 → `buyer`); (4) cartao registrado a mao
+  e crediario, que nao passam pela maquininha.
+- A API so deixa escolher **quem** paga o juros, **nao o percentual**: se a tabela diz 5% pro
+  cliente, a maquininha aplica o percentual do MP, que pode ser outro. No primeiro teste deixe
+  "cliente" = 0 (o cliente paga o preco cheio) e veja o custo real.
+- Mantenha a tabela perto das taxas reais do plano pra previa e estimativa nao mentirem; compare
+  o custo real com o estimado com `python scripts/conciliar_point.py`.
 
 ### Rotas (`api/`)
 
@@ -363,10 +395,81 @@ PDV ── /api/point/cobrar ──▶ API (Vercel) ── POST /v1/orders ─�
 |---|---|---|
 | `POST /api/point/cobrar` | equipe | cria a order na maquininha `{cobrancaId, tipo, valor, parcelas, quemPagaJuros}` |
 | `GET /api/point/status?cobrancaId=` | dono da cobranca ou admin | atualiza no MP e devolve o estado |
-| `POST /api/point/cancelar` | dono ou admin | cancela a cobranca pendente |
+| `POST /api/point/cancelar` | dono ou admin | cancela a cobranca **so ate ela chegar na maquininha** (depois, so na propria maquininha; ver "Cancelar uma cobranca") |
 | `POST /api/point/estornar` | **admin** | estorno total (ate 90 dias) |
 | `GET/POST /api/point/terminais` | **admin** | lista terminais / troca modo `PDV` ↔ `STANDALONE` |
+| `GET /api/point/diagnostico` | **admin** | checklist: token do MP, Firebase, terminais, modo PDV (nunca devolve segredo) |
 | `POST /api/webhook-point` | Mercado Pago | topico `orders`; valida `x-signature` |
+
+### Conectar hoje (teste local, sem publicar nada)
+
+A API roda **no seu computador** e usa o **mesmo Firestore de producao**: as vendas do teste sao
+**reais** (gravam no sistema e baixam estoque). Use valor pequeno e cancele depois em Vendas.
+
+1. **Mercado Pago**: loja e caixa criados e a maquininha vinculada pelo app (ver "Colocar no ar",
+   passo 1), mais o **Access Token de producao** da aplicacao (*Suas integrações → sua aplicacao →
+   Credenciais de producao*, comeca com `APP_USR-`; `TEST-` nao serve pra maquininha real).
+2. **Dois arquivos na raiz do repositorio** (os dois estao no `.gitignore`, nada vai pro git):
+   - `.env`: `Copy-Item .env.example .env` (PowerShell) e preencha **so** `MP_ACCESS_TOKEN`.
+   - `serviceAccount.json`: o mesmo que os scripts Python ja usam (secao 3). Nao precisa preencher
+     `FIREBASE_SERVICE_ACCOUNT`; se preferir, `GOOGLE_APPLICATION_CREDENTIALS` tambem vale.
+3. `npm install` (uma vez) e depois:
+
+   ```bash
+   npm run point:check -- --gravar --colocar-pdv
+   ```
+
+   Confere token, Firebase e terminais, **grava o id do terminal no `.env`** (se a conta tiver mais
+   de um, use `--terminal <id>`) e coloca a maquininha em **modo PDV** (ela passa a aceitar so
+   cobranca do sistema; volta ao normal em Configuracoes → Maquininha → *Voltar ao modo
+   autonomo*). Sem as opcoes, so confere. Tudo em `[ OK ]` = pronto; o que faltar vem com o que fazer.
+4. Em **dois terminais**, deixando os dois abertos:
+
+   ```bash
+   npm run api:dev                 # API local em http://127.0.0.1:3001
+   python scripts/dev_server.py    # o sistema em http://localhost:5173
+   ```
+
+5. Entre em `http://localhost:5173` como **administrador** → Configuracoes → *Teste so neste
+   computador* → **Ativar teste local**. A URL da API local (`http://localhost:3001`) ja vem
+   preenchida nesse bloco. Vale **so neste navegador** (nao muda a configuracao dos outros
+   usuarios) e o PDV mostra uma faixa amarela "TESTE LOCAL" enquanto estiver ligado. Em
+   *Maquininha* clique **Testar conexao**: o checklist tem que ficar todo verde.
+
+   **Onde vai cada URL** (nenhuma vai na maquininha — ela so precisa estar vinculada a conta do MP
+   e em modo PDV):
+
+   | Onde | URL | Quando |
+   |---|---|---|
+   | *Teste so neste computador* → URL da API local | `http://localhost:3001` | teste de hoje |
+   | *Maquininha* → URL da API publicada | a URL que a Vercel der ao publicar | dia a dia (vale pra todos) |
+   | Painel do MP → Webhooks (topico Order) | `https://<sua-api>/api/webhook-point` | opcional, so depois de publicar |
+
+   O campo *Maquininha → URL da API* pode ficar vazio no teste local (o PDV so usa a URL **salva**
+   ou a do teste local, e salvar `localhost` ali valeria pra todo mundo). *Testar conexao* usa o
+   que estiver digitado nele sem salvar.
+6. **Primeira cobranca**: no PDV, um produto com **Desconto** ate o total dar **R$ 1,00** →
+   pagamento **Debito** → **Cobrar na maquininha** → o cliente passa o cartao → finalize. Confira a
+   linha (taxa e `origem_taxa`). Depois **cancele a venda em Vendas** (estorna no cartao e devolve o
+   estoque). Repita com **credito 3x** e olhe `cobrancas_point/{id}.mp_raw` / `mp_pagamento_raw`.
+7. Terminou: **Desativar teste local** (em Configuracoes ou na faixa do PDV). Pra usar de verdade
+   no dia a dia, siga "Colocar no ar".
+
+Se algo falhar, o `point:check` e o **Testar conexao** dizem o que:
+
+| Sintoma | Causa provavel | O que fazer |
+|---|---|---|
+| `[ERRO] Access Token` — "UNAUTHORIZED" | token errado, incompleto ou de outra conta | copie o Access Token de **producao** inteiro, da conta dona da maquininha |
+| `[ERRO] Firebase` | sem `serviceAccount.json` na raiz | ponha o arquivo (ou defina `FIREBASE_SERVICE_ACCOUNT`) |
+| `Firebase` avisa outro projeto | chave de outro projeto | gere a chave no projeto `flora-5754a` (senao todo login e recusado) |
+| "nenhum terminal" | maquininha nao vinculada a loja/caixa | vincule pelo app do MP (QR Code no terminal) |
+| terminal em modo `STANDALONE` | maquininha em modo autonomo | `--colocar-pdv`, ou o botao em Configuracoes; reinicie a maquininha se nao mudar |
+| Testar conexao: "Sem conexao" | `api:dev` fechado ou porta diferente | rode `npm run api:dev` e deixe aberto |
+| "Sem conexao" mas o `api:dev` esta rodando (no console do navegador, F12: `No 'Access-Control-Allow-Origin'`) | CORS: um `CORS_ORIGINS` no `.env` substitui a lista padrao e deixa o sistema local de fora | o `api:dev` ja libera `http://localhost:5173` sozinho (reinicie-o e veja a linha `CORS_ORIGINS` no banner); se abrir o sistema em outra porta, ponha essa origem em `CORS_ORIGINS` |
+| Testar conexao: "URL da API esta vazia" | nenhum teste local ativo e o campo da URL vazio | ative o *Teste so neste computador* (ou preencha a URL publicada) |
+| Testar conexao: "nao aceitou o seu login" | service account de outro projeto | use a chave do `flora-5754a` e entre de novo |
+| "cobranca pendente na maquininha" | ja existe uma cobranca aberta la | conclua ou cancele na propria maquininha |
+| Cancelar cobranca: "ja esta na maquininha, so da pra cancelar por la" | o Mercado Pago so cancela pela API antes da cobranca chegar na maquininha | aperte o **X** na maquininha; a tela do PDV percebe sozinha ("Cancelada na maquininha") |
 
 ### Colocar no ar (passo a passo)
 
@@ -400,17 +503,37 @@ maquininha comum; registre o cartao manualmente no PDV (desmarque *Exigir a maqu
 
 Com dinheiro de verdade, valor pequeno: cobrar **R$ 1,00 no debito**, aprovar, conferir a venda
 (`origem_taxa` e `custo_loja`), e **estornar** (Vendas → cancelar a venda estorna no cartao).
-Depois **credito 3x** e olhe `cobrancas_point/{id}.mp_raw` / `mp_pagamento_raw` no Firestore.
+Depois **credito 3x** e olhe `cobrancas_point/{id}.mp_raw` / `mp_pagamento_raw` no Firestore. O
+passo a passo esta em "Conectar hoje".
 
 ### O que ainda precisa ser confirmado no primeiro teste real
 
 - O nome do campo de quem paga o juros: a doc do MP usa `installments_cost` numa pagina e
   `default_installments_cost` em outra (constante `CAMPO_QUEM_PAGA_JUROS` em `api/_lib/point.js`).
+  Se o MP recusar um, a API tenta o outro **uma vez** sozinha (so em credito) — o log mostra qual.
 - De onde vem a **taxa real**: o codigo tenta o pagamento na API classica
   (`/v1/payments/{reference_id}` → `net_received_amount`/`fee_details`). Se a order nao trouxer
   esse id, a taxa cai em `origem_taxa: "estimada"` — o `mp_raw` mostra o formato verdadeiro.
-- Cancelar uma cobranca que ja esta na maquininha (`at_terminal`) pela API: a doc e ambigua. Se o
-  MP recusar, o sistema orienta cancelar pela propria maquininha.
+- Cancelar uma cobranca que ja esta na maquininha (`at_terminal`) pela API: a referencia da API
+  diz que so cancela uma order em `created` (segundos depois de criada) e que em `at_terminal`
+  responde 409 `cannot_cancel_order`. O guia de migracao cita o header
+  `x-allow-cancelable-status: at_terminal` (continuamos mandando), mas o cancelar do primeiro teste
+  real falhou. Agora a tela mostra o motivo exato devolvido pelo MP: confirme aqui no proximo
+  teste. Se um dia a maquininha aceitar o header, o cancelamento pela API volta a funcionar sozinho
+  (ver "Cancelar uma cobranca").
+
+### Cancelar uma cobranca
+
+- **Antes de chegar na maquininha** (poucos segundos apos criar, status `created`): o botao
+  *Cancelar cobranca* do PDV cancela pela API.
+- **Ja na maquininha** (`at_terminal`): so ela cancela — aperte o **X** nela. O PDV avisa isso na tela
+  (o botao some) e **percebe sozinho** quando cancelam la: a cobranca vira "Cancelada na maquininha"
+  e a linha do pagamento e liberada. O mesmo vale pro botao *Limpar* com cobranca aberta.
+- Se o cliente pagar no mesmo instante em que a vendedora cancela, o *Limpar* **nao apaga** o
+  pagamento: a linha passa a "cobrada" (finalize a venda ou use *Limpar* de novo pra estornar).
+- Cada tentativa de cancelar/estornar usa uma chave de idempotencia **nova** (o MP recusa reuso da
+  mesma) e "ja cancelada"/"ja estornada" no MP conta como sucesso. Qualquer outra recusa do MP
+  aparece na tela com o motivo real.
 
 ### Operacao
 
